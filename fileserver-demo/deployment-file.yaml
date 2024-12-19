@@ -1,4 +1,4 @@
-template-file-path: cfn-demos/fileserver-demo/windows-file-server.yaml
+template-file-path: fileserver-demo/windows-file-server.yaml
 
 Parameters:
   VpcCIDR: 10.0.0.0/16
