@@ -179,8 +179,75 @@ Resources:
       Name: !Ref DomainDNSName
       Password: !Ref DomainAdminPassword
       VpcSettings:
+        SubnetIds: 
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
         VpcId: !Ref VPC
-        SubnetIds:
+
+  # Route53 Private Hosted Zone for Managed AD
+  PrivateHostedZone:
+    Type: AWS::Route53::HostedZone
+    DependsOn: MicrosoftAD
+    Properties:
+      Name: !Ref DomainDNSName
+      VPCs:
+        - VPCId: !Ref VPC
+          VPCRegion: !Ref 'AWS::Region'
+      HostedZoneConfig:
+        Comment: Private hosted zone for Managed AD
+
+  # Outbound Resolver Endpoint Security Group
+  OutboundResolverSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for DNS outbound resolver endpoints
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: !Ref VpcCIDR
+      SecurityGroupEgress:
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: !Ref VpcCIDR
+
+  # Outbound Resolver Endpoint
+  OutboundResolverEndpoint:
+    Type: AWS::Route53Resolver::ResolverEndpoint
+    Properties:
+      Direction: OUTBOUND
+      IpAddresses: 
+        - SubnetId: !Ref PrivateSubnet1
+        - SubnetId: !Ref PrivateSubnet2
+      SecurityGroupIds: 
+        - !Ref OutboundResolverSecurityGroup
+      Name: managed-ad-resolver
+
+  # Resolver Rule
+  ResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    DependsOn: OutboundResolverEndpoint
+    Properties:
+      DomainName: !Ref DomainDNSName
+      Name: managed-ad-rule
+      ResolverEndpointId: !Ref OutboundResolverEndpoint
+      RuleType: FORWARD
+      TargetIps: 
+        - Ip: !Select [0, !GetAtt MicrosoftAD.DnsIpAddresses]
+          Port: 53
+        - Ip: !Select [1, !GetAtt MicrosoftAD.DnsIpAddresses]
+          Port: 53
+
+  # Resolver Rule Association
+  ResolverRuleAssociation:
+    Type: AWS::Route53Resolver::ResolverRuleAssociation
+    DependsOn: ResolverRule
+    Properties:
+      Name: managed-ad-rule-association
+      ResolverRuleId: !Ref ResolverRule
+      VPCId: !Ref VPC
           - !Ref PrivateSubnet1
           - !Ref PrivateSubnet2
       Edition: Standard
