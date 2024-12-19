@@ -1,0 +1,11 @@
+template-file-path: fileserver-demo/ssm-automation/cfn-create-ssm-automation-secretmanager-adjoin.yaml
+
+Parameters:
+  SSMAutomationRunbookNameParam: DomainJoin-Automation
+  ADDomainNameParam: corp.example.com
+  ADUserNameParam: CORP\Admin
+  ADPasswordParam: Password123
+  ADTargetOUParam: OU=Computers,OU=CORP,dc=corp,dc=example,dc=com
+
+tags:
+    environment: 'demo'
