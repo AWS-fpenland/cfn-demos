@@ -2,8 +2,8 @@ template-file-path: >-
   fileserver-demo/ssm-automation/cfn-create-ssm-automation-secretmanager-adjoin.yml
 parameters:
   SSMAutomationRunbookNameParam: DomainJoinAutomation
-  ADDomainNameParam: fileserver-demo.cloud
-  ADUserNameParam: FILESERVER-DEMO\Admin
+  ADDomainNameParam: filesever-demo.cloud
+  ADUserNameParam: FILESEVER-DEMO\Admin
   ADPasswordParam: Password123
-  ADTargetOUParam: OU=Computers,dc=fileserver-demo,dc=cloud
+  ADTargetOUParam: OU=Computers,dc=filesever-demo,dc=cloud
 tags: {}
