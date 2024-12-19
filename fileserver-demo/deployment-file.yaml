@@ -1,0 +1,15 @@
+template-file-path: ./windows-file-server.yaml
+
+Parameters:
+  VpcCIDR: 10.0.0.0/16
+  PublicSubnet1CIDR: 10.0.1.0/24
+  PublicSubnet2CIDR: 10.0.2.0/24
+  PrivateSubnet1CIDR: 10.0.3.0/24
+  PrivateSubnet2CIDR: 10.0.4.0/24
+  DomainDNSName: filesever-demo.cloud
+  DomainAdminPassword: P@ssw0rd123!!
+  WindowsAmiId: /aws/service/ami-windows-latest/Windows_Server-2019-English-Full-Base
+  InstanceType: t3.large
+
+tags:
+    environment: 'demo'
