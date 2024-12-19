@@ -5,5 +5,5 @@ parameters:
   ADDomainNameParam: fileserver-demo.cloud
   ADUserNameParam: FILESERVER-DEMO\Admin
   ADPasswordParam: Password123
-  ADTargetOUParam: OU=Computers,OU=CORP,dc=corp,dc=example,dc=com
+  ADTargetOUParam: OU=Computers,dc=fileserver-demo,dc=cloud
 tags: {}
