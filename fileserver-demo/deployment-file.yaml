@@ -7,7 +7,7 @@ Parameters:
   PrivateSubnet1CIDR: 10.0.3.0/24
   PrivateSubnet2CIDR: 10.0.4.0/24
   DomainDNSName: filesever-demo.cloud
-  DomainAdminPassword: "P@ssw0rd123!!"
+  DomainAdminPassword: Password123
   WindowsAmiId: /aws/service/ami-windows-latest/Windows_Server-2019-English-Full-Base
   InstanceType: t3.large
 

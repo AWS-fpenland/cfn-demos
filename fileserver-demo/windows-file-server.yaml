@@ -28,6 +28,7 @@ Parameters:
     Description: Fully qualified domain name for the AWS Managed Microsoft AD
   DomainAdminPassword:
     Type: String
+    Default: Password123
     Description: Password for the domain admin user
     MinLength: 8
   WindowsAmiId:
