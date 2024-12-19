@@ -221,6 +221,19 @@ Resources:
       Tags:
         - Key: Name
           Value: Windows File Server
+      SsmAssociations:
+        - AssociationParameters:
+            - Key: directoryId
+              Values:
+                - !Ref MicrosoftAD
+            - Key: directoryName
+              Values:
+                - !Ref DomainDNSName
+            - Key: dnsIpAddresses
+              Values:
+                - !Select [0, !GetAtt MicrosoftAD.DnsIpAddresses]
+                - !Select [1, !GetAtt MicrosoftAD.DnsIpAddresses]
+          DocumentName: AWS-JoinDirectoryServiceDomain
 
   FileServerRole:
     Type: AWS::IAM::Role
