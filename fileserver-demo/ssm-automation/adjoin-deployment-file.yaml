@@ -1,4 +1,4 @@
-template-file-path: fileserver-demo/ssm-automation/cfn-create-ssm-automation-secretmanager-adjoin.yaml
+template-file-path: fileserver-demo/ssm-automation/cfn-create-ssm-automation-secretmanager-adjoin.yml
 
 Parameters:
   SSMAutomationRunbookNameParam: DomainJoin-Automation
