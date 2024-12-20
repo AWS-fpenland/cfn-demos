@@ -320,21 +320,24 @@ Resources:
       Roles:
         - !Ref FileServerRole
 
+
   DomainJoinAssociation:
-      Type: AWS::SSM::Association
-      Properties:
-        Name: DomainJoinAutomation
-        Parameters:
-          AutomationAssumeRole:
+    Type: AWS::SSM::Association
+    Properties:
+      AssociationName: DomainJoinAutomation-Association
+      Name: DomainJoinAutomation
+      Parameters: 
+        AutomationAssumeRole:
             - AWS-SystemsManager-AutomationExecutionRole
-          InstanceID:
+        InstanceID:
             - !Ref FileServerInstance
-          DomainJoinActivity:
-            - join
-        Targets:
-          - Key: InstanceIds
-            Values:
-              - !Ref FileServerInstance
+        DomainJoinActivity:
+            - Join
+      Targets: 
+        - Key: InstanceIds
+          Values: !Ref FileServerInstance
+      AutomationTargetParameterName: InstanceID
+
 
 Outputs:
   FileServerId:
