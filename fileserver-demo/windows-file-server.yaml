@@ -320,6 +320,22 @@ Resources:
       Roles:
         - !Ref FileServerRole
 
+  DomainJoinAssociation:
+      Type: AWS::SSM::Association
+      Properties:
+        Name: DomainJoinAutomation
+        Parameters:
+          AutomationAssumeRole:
+            - AWS-SystemsManager-AutomationExecutionRole
+          InstanceID:
+            - !Ref FileServerInstance
+          DomainJoinActivity:
+            - join
+        Targets:
+          - Key: InstanceIds
+            Values:
+              - !Ref FileServerInstance
+
 Outputs:
   FileServerId:
     Description: ID of the Windows File Server Instance
