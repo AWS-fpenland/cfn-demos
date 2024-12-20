@@ -134,6 +134,42 @@ Resources:
       SubnetId: !Ref PublicSubnet2
       RouteTableId: !Ref PublicRouteTable
 
+  EC2InstanceConnectEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for EC2 Instance Connect Endpoint
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3389
+          ToPort: 3389
+          CidrIp: !Ref VpcCIDR
+      Tags:
+        - Key: Name
+          Value: EC2 Instance Connect Endpoint Security Group
+
+  EC2InstanceConnectEndpoint1:
+    Type: AWS::EC2::InstanceConnectEndpoint
+    Properties:
+      SecurityGroupIds: 
+        - !Ref EC2InstanceConnectEndpointSecurityGroup
+      SubnetId: !Ref PublicSubnet1
+      PreserveClientIp: true
+      Tags:
+        - Key: Name
+          Value: Windows File Server EIC Endpoint 1
+
+  EC2InstanceConnectEndpoint2:
+    Type: AWS::EC2::InstanceConnectEndpoint
+    Properties:
+      SecurityGroupIds: 
+        - !Ref EC2InstanceConnectEndpointSecurityGroup
+      SubnetId: !Ref PublicSubnet2
+      PreserveClientIp: true
+      Tags:
+        - Key: Name
+          Value: Windows File Server EIC Endpoint 2
+
   NATGateway1:
     Type: AWS::EC2::NatGateway
     Properties:
@@ -282,6 +318,11 @@ Resources:
       SecurityGroupIds:
         - !Ref FileServerSecurityGroup
       IamInstanceProfile: !Ref FileServerInstanceProfile
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvdf
+          Ebs:
+            VolumeSize: 500
+            VolumeType: gp3
       Tags:
         - Key: Name
           Value: Windows File Server
@@ -296,6 +337,11 @@ Resources:
       SecurityGroupIds:
         - !Ref FileServerSecurityGroup
       IamInstanceProfile: !Ref FileServerInstanceProfile
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvdf
+          Ebs:
+            VolumeSize: 500
+            VolumeType: gp3
       Tags:
         - Key: Name
           Value: Windows File Server 2
