@@ -285,7 +285,7 @@ Resources:
       Tags:
         - Key: Name
           Value: Windows File Server
-          
+
   FileServerRole:
     Type: AWS::IAM::Role
     Properties:
@@ -299,6 +299,7 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
         - arn:aws:iam::aws:policy/AmazonSSMDirectoryServiceAccess
+        - arn:aws:iam::aws:policy/SecretsManagerReadWrite
 
   FileServerInstanceProfile:
     Type: AWS::IAM::InstanceProfile
