@@ -349,10 +349,8 @@ Resources:
             - Join
       Targets: 
           - Key: InstanceIds
-            Values: 
-              - !Ref FileServerInstance
-              - !Ref FileServerInstance2  
-
+            Values: [!Ref FileServerInstance, !Ref FileServerInstance2]  
+      AutomationTargetParameterName: InstanceID
 
 Outputs:
   FileServerId:
