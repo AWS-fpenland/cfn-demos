@@ -299,7 +299,20 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
         - arn:aws:iam::aws:policy/AmazonSSMDirectoryServiceAccess
-        - arn:aws:iam::aws:policy/SecretsManagerReadWrite
+      Policies:
+        - PolicyName: Secrets-Manager-KMS-AllowAll
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - kms:DescribeKey
+                  - kms:Decrypt
+                Resource:
+                # Allow all secrets and keys in the account
+                  - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:*
+                  - !Sub arn:aws:kms:${AWS::Region}:${AWS::AccountId}:key/*
 
   FileServerInstanceProfile:
     Type: AWS::IAM::InstanceProfile
