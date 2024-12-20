@@ -286,6 +286,20 @@ Resources:
         - Key: Name
           Value: Windows File Server
 
+  FileServerInstance2:
+    Type: AWS::EC2::Instance
+    DependsOn: MicrosoftAD
+    Properties:
+      ImageId: !Ref WindowsAmiId
+      InstanceType: !Ref InstanceType
+      SubnetId: !Ref PrivateSubnet2
+      SecurityGroupIds:
+        - !Ref FileServerSecurityGroup
+      IamInstanceProfile: !Ref FileServerInstanceProfile
+      Tags:
+        - Key: Name
+          Value: Windows File Server 2
+
   FileServerRole:
     Type: AWS::IAM::Role
     Properties:
@@ -334,9 +348,10 @@ Resources:
         DomainJoinActivity:
             - Join
       Targets: 
-        - Key: InstanceIds
-          Values: !Ref FileServerInstance
-      AutomationTargetParameterName: InstanceID
+          - Key: InstanceIds
+            Values: 
+              - !Ref FileServerInstance
+              - !Ref FileServerInstance2  
 
 
 Outputs:
