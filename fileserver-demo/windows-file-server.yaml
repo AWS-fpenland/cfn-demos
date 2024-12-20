@@ -334,7 +334,25 @@ Resources:
       Roles:
         - !Ref FileServerRole
 
-
+  DomainJoinAutomation:
+    Type: AWS::SSM::Association
+    Properties:
+      Name: DomainJoinAutomation
+      DocumentVersion: "$DEFAULT"
+      Parameters:
+        AutomationAssumeRole:
+          - !Sub arn:aws:iam::${AWS::AccountId}:role/AWS-SystemsManager-AutomationExecutionRole
+        DomainJoinActivity:
+          - Join
+      AutomationTargetParameterName: InstanceId
+      Targets:
+        - Key: ParameterValues
+          Values:
+            - !Ref FileServerInstance
+            - !Ref FileServerInstance2
+      MaxConcurrency: 100%
+      MaxErrors: 100%
+  
 
 Outputs:
   FileServerId:
