@@ -1,0 +1,4 @@
+template-file-path: IAMRolesAnywhere/IAM-Roles-Anywhere-Demo.yaml
+
+tags:
+    environment: 'demo'
