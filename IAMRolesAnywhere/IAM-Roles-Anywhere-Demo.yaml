@@ -1,0 +1,151 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'IAM Roles Anywhere Demo with ACM PKI Infrastructure'
+
+Resources:
+  # Create a Private Certificate Authority
+  PrivateCA:
+    Type: 'AWS::ACMPCA::CertificateAuthority'
+    Properties:
+      Type: ROOT
+      KeyAlgorithm: RSA_2048
+      SigningAlgorithm: SHA256WITHRSA
+      Subject:
+        Country: US
+        Organization: Demo Organization
+        OrganizationalUnit: IT
+        CommonName: Demo Root CA
+      RevocationConfiguration:
+        CrlConfiguration:
+          Enabled: false
+
+  # Create a Certificate for the CA (self-signed)
+  RootCertificate:
+    Type: 'AWS::ACMPCA::Certificate'
+    Properties:
+      CertificateAuthorityArn: !Ref PrivateCA
+      CertificateSigningRequest: !GetAtt PrivateCA.CertificateSigningRequest
+      SigningAlgorithm: SHA256WITHRSA
+      Validity:
+        Type: DAYS
+        Value: 3650
+        
+  # Activate the CA
+  CertificateAuthorityActivation:
+    Type: 'AWS::ACMPCA::CertificateAuthorityActivation'
+    DependsOn: RootCertificate
+    Properties:
+      CertificateAuthorityArn: !Ref PrivateCA
+      Status: ACTIVE
+      Certificate: !GetAtt RootCertificate.Certificate
+
+  # Create an S3 bucket
+  DemoS3Bucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Sub 'iamra-demo-bucket-${AWS::AccountId}-${AWS::Region}'
+
+  # Create an IAM policy for S3 access
+  S3AccessPolicy:
+    Type: 'AWS::IAM::ManagedPolicy'
+    Properties:
+      Description: 'Policy to allow S3 access for IAM Roles Anywhere demo'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - 's3:ListBucket'
+              - 's3:GetObject'
+              - 's3:PutObject'
+              - 's3:DeleteObject'
+            Resource:
+              - !GetAtt DemoS3Bucket.Arn
+              - !Join ['', [!GetAtt DemoS3Bucket.Arn, '/*']]
+
+  # Create IAM Role that can be assumed via IAM Roles Anywhere
+  DemoIAMRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: 'IAMRolesAnywhereDemoRole'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: 'rolesanywhere.amazonaws.com'
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - !Ref S3AccessPolicy
+
+  # Create IAM Roles Anywhere Trust Anchor
+  TrustAnchor:
+    Type: 'AWS::RolesAnywhere::TrustAnchor'
+    Properties:
+      Name: 'DemoTrustAnchor'
+      Source:
+        SourceType: 'CERTIFICATE_BUNDLE'
+        SourceData:
+          AcmPcaArn: !Ref PrivateCA
+
+  # Create IAM Roles Anywhere Profile
+  Profile:
+    Type: 'AWS::RolesAnywhere::Profile'
+    Properties:
+      Name: 'DemoProfile'
+      RoleArns:
+        - !GetAtt DemoIAMRole.Arn
+
+Outputs:
+  S3BucketName:
+    Description: 'Name of the created S3 bucket'
+    Value: !Ref DemoS3Bucket
+  
+  PrivateCAArn:
+    Description: 'ARN of the Private Certificate Authority'
+    Value: !Ref PrivateCA
+  
+  TrustAnchorArn:
+    Description: 'ARN of the IAM Roles Anywhere Trust Anchor'
+    Value: !Ref TrustAnchor
+  
+  ProfileArn:
+    Description: 'ARN of the IAM Roles Anywhere Profile'
+    Value: !Ref Profile
+  
+  IAMRoleArn:
+    Description: 'ARN of the IAM Role that can be assumed'
+    Value: !GetAtt DemoIAMRole.Arn
+  
+  ClientCertInstructions:
+    Description: 'Instructions to issue a client certificate'
+    Value: !Sub |
+      1. Create a private key on your Windows laptop:
+         openssl genrsa -out private-key.pem 2048
+
+      2. Create a Certificate Signing Request (CSR):
+         openssl req -new -key private-key.pem -out csr.pem
+
+      3. Issue a certificate using the CSR and Private CA:
+         aws acm-pca issue-certificate \
+           --certificate-authority-arn ${PrivateCA} \
+           --csr fileb://csr.pem \
+           --signing-algorithm SHA256WITHRSA \
+           --validity Value=365,Type=DAYS
+
+      4. Retrieve the certificate:
+         aws acm-pca get-certificate \
+           --certificate-authority-arn ${PrivateCA} \
+           --certificate-arn <certificate-arn-from-previous-command> \
+           --output text > certificate.pem
+
+      5. Download the credential helper from: 
+         https://github.com/aws/rolesanywhere-credential-helper/releases
+
+      6. Install the credential helper on your Windows laptop
+
+      7. Configure credential-process in your AWS CLI config file:
+         [profile iamra-demo]
+         credential_process = aws_signing_helper credential-process --certificate certificate.pem --private-key private-key.pem --trust-anchor-arn ${TrustAnchor} --profile-arn ${Profile} --role-arn ${DemoIAMRole.Arn}
+
+      8. Test access to the S3 bucket:
+         aws s3 ls s3://${DemoS3Bucket} --profile iamra-demo
