@@ -40,10 +40,10 @@ Resources:
                 Action:
                   - 'acm-pca:GetCertificateAuthorityCertificate'
                   - 'acm-pca:GetCertificateAuthorityCsr'
-                  - 'acm-pca:IssueCertificate'
-                  - 'acm-pca:ImportCertificateAuthorityCertificate'
-                  - 'acm-pca:UpdateCertificateAuthority'
                   - 'acm-pca:DescribeCertificateAuthority'
+                  - 'acm-pca:IssueCertificate'
+                  - 'acm-pca:GetCertificate'
+                  - 'acm-pca:ImportCertificateAuthorityCertificate'
                 Resource: !GetAtt PrivateCA.Arn
 
   # Lambda function to handle CA activation
@@ -54,13 +54,15 @@ Resources:
       Handler: 'index.handler'
       Role: !GetAtt LambdaExecutionRole.Arn
       Runtime: 'python3.9'
-      Timeout: 300
+      Timeout: 600
       Code:
         ZipFile: |
           import json
           import boto3
           import cfnresponse
           import time
+          import os
+          from botocore.exceptions import ClientError
 
           def handler(event, context):
               response_data = {}
@@ -72,95 +74,86 @@ Resources:
                       # Create clients
                       acmpca = boto3.client('acm-pca')
                       
-                      # Wait for the CA to be created and in PENDING_CERTIFICATE state
-                      print(f"Waiting for CA {ca_arn} to be ready...")
-                      max_retries = 10
-                      for i in range(max_retries):
-                          try:
-                              ca_response = acmpca.describe_certificate_authority(
-                                  CertificateAuthorityArn=ca_arn
-                              )
-                              status = ca_response['CertificateAuthority']['Status']
-                              print(f"Current CA status: {status}")
-                              
-                              if status == 'PENDING_CERTIFICATE':
-                                  print("CA is in PENDING_CERTIFICATE state, proceeding...")
-                                  break
-                              elif status == 'CREATING':
-                                  print("CA is still being created, waiting...")
-                                  time.sleep(10)
-                              else:
-                                  raise Exception(f"CA is in unexpected state: {status}")
-                          except Exception as e:
-                              print(f"Error checking CA status: {str(e)}")
-                              time.sleep(10)
-                      else:
-                          raise Exception(f"CA did not reach PENDING_CERTIFICATE state after {max_retries} attempts")
-                      
-                      # Get the CSR from the CA
-                      print("Requesting CSR from the CA...")
-                      max_retries = 5
-                      for i in range(max_retries):
-                          try:
-                              csr_response = acmpca.get_certificate_authority_csr(
-                                  CertificateAuthorityArn=ca_arn
-                              )
-                              csr = csr_response['Csr']
-                              print("Successfully obtained CSR")
-                              break
-                          except Exception as e:
-                              print(f"Error getting CSR (attempt {i+1}/{max_retries}): {str(e)}")
-                              time.sleep(5)
-                      else:
-                          raise Exception("Failed to get CSR after multiple attempts")
-                      
-                      # Issue a certificate using the CSR
-                      print("Issuing self-signed certificate...")
-                      issue_response = acmpca.issue_certificate(
-                          CertificateAuthorityArn=ca_arn,
-                          Csr=csr,
-                          SigningAlgorithm='SHA256WITHRSA',
-                          Validity={
-                              'Value': 3650,
-                              'Type': 'DAYS'
-                          },
-                          IdempotencyToken='selfSignedCert1'
+                      # Check CA status first
+                      print(f"Checking initial status of CA {ca_arn}...")
+                      ca_response = acmpca.describe_certificate_authority(
+                          CertificateAuthorityArn=ca_arn
                       )
-                      certificate_arn = issue_response['CertificateArn']
-                      print(f"Certificate issuance initiated, ARN: {certificate_arn}")
+                      status = ca_response['CertificateAuthority']['Status']
+                      print(f"Initial CA status: {status}")
                       
-                      # Wait for certificate to be issued
-                      print("Waiting for certificate to be issued...")
-                      max_retries = 30
-                      for i in range(max_retries):
+                      # If CA is already active, we're done
+                      if status == 'ACTIVE':
+                          print("CA is already ACTIVE, nothing to do")
+                          response_data = {
+                              'CertificateAuthorityArn': ca_arn,
+                              'Message': 'CA already active'
+                          }
+                          cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data)
+                          return
+                      
+                      # Generate the private key and CSR locally
+                      # (This avoids depending on the CA's CSR and state)
+                      print("Generating key and self-signed certificate locally...")
+                      
+                      # Create a temporary directory for our files
+                      import tempfile
+                      temp_dir = tempfile.mkdtemp()
+                      private_key_path = os.path.join(temp_dir, 'private_key.pem')
+                      csr_path = os.path.join(temp_dir, 'csr.pem')
+                      cert_path = os.path.join(temp_dir, 'cert.pem')
+                      
+                      # Get subject information from the CA
+                      subject = ca_response['CertificateAuthority']['CertificateAuthorityConfiguration']['Subject']
+                      country = subject.get('Country', 'US')
+                      org = subject.get('Organization', 'Demo Organization')
+                      ou = subject.get('OrganizationalUnit', 'IT')
+                      cn = subject.get('CommonName', 'Demo Root CA')
+                      
+                      # Generate private key
+                      os.system(f"openssl genrsa -out {private_key_path} 2048")
+                      
+                      # Generate CSR with the same subject as the CA
+                      os.system(f'openssl req -new -key {private_key_path} -out {csr_path} -subj "/C={country}/O={org}/OU={ou}/CN={cn}"')
+                      
+                      # Generate self-signed certificate
+                      os.system(f'openssl x509 -req -days 3650 -in {csr_path} -signkey {private_key_path} -out {cert_path}')
+                      
+                      # Read the certificate
+                      with open(cert_path, 'r') as f:
+                          certificate = f.read()
+                      
+                      print("Certificate generated successfully")
+                      
+                      # Retry logic for importing the certificate
+                      max_retries = 20
+                      retry_interval = 15  # seconds
+                      for attempt in range(max_retries):
                           try:
-                              cert_response = acmpca.get_certificate(
+                              print(f"Attempting to import certificate (attempt {attempt+1}/{max_retries})...")
+                              # Import the certificate to activate the CA
+                              acmpca.import_certificate_authority_certificate(
                                   CertificateAuthorityArn=ca_arn,
-                                  CertificateArn=certificate_arn
+                                  Certificate=certificate
                               )
-                              certificate = cert_response['Certificate']
-                              print("Certificate has been issued successfully")
+                              print("Certificate imported successfully!")
                               break
-                          except acmpca.exceptions.RequestInProgressException:
-                              print(f"Certificate issuance in progress (attempt {i+1}/{max_retries})...")
-                              time.sleep(5)
-                          except Exception as e:
-                              print(f"Error checking certificate status: {str(e)}")
-                              time.sleep(5)
+                          except ClientError as e:
+                              error_code = e.response['Error']['Code']
+                              error_message = e.response['Error']['Message']
+                              print(f"Error importing certificate: {error_code} - {error_message}")
+                              
+                              if error_code == 'InvalidStateException':
+                                  print(f"CA not ready yet, waiting {retry_interval} seconds...")
+                                  time.sleep(retry_interval)
+                              else:
+                                  raise
                       else:
-                          raise Exception("Certificate issuance timed out")
-                      
-                      # Import the certificate to activate the CA
-                      print("Importing certificate to activate the CA...")
-                      acmpca.import_certificate_authority_certificate(
-                          CertificateAuthorityArn=ca_arn,
-                          Certificate=certificate
-                      )
-                      print("Certificate imported successfully")
+                          raise Exception(f"Failed to import certificate after {max_retries} attempts")
                       
                       # Wait for CA to become ACTIVE
                       print("Waiting for CA to become ACTIVE...")
-                      max_retries = 10
+                      max_retries = 20
                       for i in range(max_retries):
                           try:
                               ca_response = acmpca.describe_certificate_authority(
@@ -173,19 +166,23 @@ Resources:
                                   print("CA is now ACTIVE")
                                   break
                               else:
-                                  print(f"CA is in state {status}, waiting...")
-                                  time.sleep(10)
+                                  print(f"CA is in state {status}, waiting {retry_interval} seconds...")
+                                  time.sleep(retry_interval)
                           except Exception as e:
                               print(f"Error checking CA status: {str(e)}")
-                              time.sleep(10)
+                              time.sleep(retry_interval)
                       else:
                           raise Exception(f"CA did not reach ACTIVE state after {max_retries} attempts")
+                      
+                      # Clean up temporary files
+                      import shutil
+                      shutil.rmtree(temp_dir)
                       
                       response_data = {
                           'CertificateAuthorityArn': ca_arn,
                           'Message': 'CA activated successfully'
                       }
-                      
+                  
                   cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data)
               except Exception as e:
                   print(f"Error: {str(e)}")
