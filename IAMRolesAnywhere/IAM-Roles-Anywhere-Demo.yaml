@@ -46,7 +46,7 @@ Resources:
                   - 'acm-pca:ImportCertificateAuthorityCertificate'
                 Resource: !GetAtt PrivateCA.Arn
 
-  # Lambda function to handle CA activation
+  # Lambda function for CA activation - NO OPENSSL, AWS API ONLY
   CAActivationFunction:
     Type: 'AWS::Lambda::Function'
     DependsOn: PrivateCA
@@ -61,11 +61,12 @@ Resources:
           import boto3
           import cfnresponse
           import time
-          import os
           from botocore.exceptions import ClientError
 
           def handler(event, context):
+              print("FUNCTION VERSION: NO OPENSSL, AWS API ONLY - V3.0")
               response_data = {}
+              
               try:
                   if event['RequestType'] in ['Create', 'Update']:
                       # Get the CA ARN from the event
@@ -74,13 +75,13 @@ Resources:
                       # Create clients
                       acmpca = boto3.client('acm-pca')
                       
-                      # Check CA status first
-                      print(f"Checking initial status of CA {ca_arn}...")
+                      # Check CA status
+                      print(f"Checking status of CA {ca_arn}...")
                       ca_response = acmpca.describe_certificate_authority(
                           CertificateAuthorityArn=ca_arn
                       )
                       status = ca_response['CertificateAuthority']['Status']
-                      print(f"Initial CA status: {status}")
+                      print(f"Current CA status: {status}")
                       
                       # If CA is already active, we're done
                       if status == 'ACTIVE':
@@ -92,68 +93,72 @@ Resources:
                           cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data)
                           return
                       
-                      # Generate the private key and CSR locally
-                      # (This avoids depending on the CA's CSR and state)
-                      print("Generating key and self-signed certificate locally...")
+                      # Step 1: Get the CSR from the CA
+                      print("Step 1: Requesting CSR from the CA...")
+                      csr_response = acmpca.get_certificate_authority_csr(
+                          CertificateAuthorityArn=ca_arn
+                      )
+                      csr = csr_response['Csr']
+                      print(f"Successfully obtained CSR, length: {len(csr)} characters")
                       
-                      # Create a temporary directory for our files
-                      import tempfile
-                      temp_dir = tempfile.mkdtemp()
-                      private_key_path = os.path.join(temp_dir, 'private_key.pem')
-                      csr_path = os.path.join(temp_dir, 'csr.pem')
-                      cert_path = os.path.join(temp_dir, 'cert.pem')
+                      # Step 2: Issue a certificate using the CSR with the RootCACertificate template
+                      print("Step 2: Issuing self-signed root certificate...")
+                      try:
+                          issue_response = acmpca.issue_certificate(
+                              CertificateAuthorityArn=ca_arn,
+                              Csr=csr,
+                              SigningAlgorithm='SHA256WITHRSA',
+                              TemplateArn='arn:aws:acm-pca:::template/RootCACertificate/V1',
+                              Validity={
+                                  'Value': 3650,
+                                  'Type': 'DAYS'
+                              },
+                              IdempotencyToken='selfSignedRootCertV3'
+                          )
+                          certificate_arn = issue_response['CertificateArn']
+                          print(f"Certificate issuance initiated, ARN: {certificate_arn}")
+                      except ClientError as e:
+                          error_code = e.response['Error']['Code']
+                          error_message = e.response['Error']['Message']
+                          print(f"Error issuing certificate: {error_code} - {error_message}")
+                          raise
                       
-                      # Get subject information from the CA
-                      subject = ca_response['CertificateAuthority']['CertificateAuthorityConfiguration']['Subject']
-                      country = subject.get('Country', 'US')
-                      org = subject.get('Organization', 'Demo Organization')
-                      ou = subject.get('OrganizationalUnit', 'IT')
-                      cn = subject.get('CommonName', 'Demo Root CA')
-                      
-                      # Generate private key
-                      os.system(f"openssl genrsa -out {private_key_path} 2048")
-                      
-                      # Generate CSR with the same subject as the CA
-                      os.system(f'openssl req -new -key {private_key_path} -out {csr_path} -subj "/C={country}/O={org}/OU={ou}/CN={cn}"')
-                      
-                      # Generate self-signed certificate
-                      os.system(f'openssl x509 -req -days 3650 -in {csr_path} -signkey {private_key_path} -out {cert_path}')
-                      
-                      # Read the certificate
-                      with open(cert_path, 'r') as f:
-                          certificate = f.read()
-                      
-                      print("Certificate generated successfully")
-                      
-                      # Retry logic for importing the certificate
-                      max_retries = 20
-                      retry_interval = 15  # seconds
-                      for attempt in range(max_retries):
+                      # Step 3: Wait for and retrieve the certificate
+                      print("Step 3: Waiting for certificate to be issued...")
+                      max_retries = 30
+                      for i in range(max_retries):
                           try:
-                              print(f"Attempting to import certificate (attempt {attempt+1}/{max_retries})...")
-                              # Import the certificate to activate the CA
-                              acmpca.import_certificate_authority_certificate(
+                              cert_response = acmpca.get_certificate(
                                   CertificateAuthorityArn=ca_arn,
-                                  Certificate=certificate
+                                  CertificateArn=certificate_arn
                               )
-                              print("Certificate imported successfully!")
+                              certificate = cert_response['Certificate']
+                              print(f"Certificate has been issued successfully, length: {len(certificate)} characters")
                               break
-                          except ClientError as e:
-                              error_code = e.response['Error']['Code']
-                              error_message = e.response['Error']['Message']
-                              print(f"Error importing certificate: {error_code} - {error_message}")
-                              
-                              if error_code == 'InvalidStateException':
-                                  print(f"CA not ready yet, waiting {retry_interval} seconds...")
-                                  time.sleep(retry_interval)
-                              else:
-                                  raise
+                          except acmpca.exceptions.RequestInProgressException:
+                              print(f"Certificate issuance in progress (attempt {i+1}/{max_retries})...")
+                              time.sleep(5)
+                          except Exception as e:
+                              print(f"Error getting certificate (attempt {i+1}/{max_retries}): {str(e)}")
+                              time.sleep(5)
                       else:
-                          raise Exception(f"Failed to import certificate after {max_retries} attempts")
+                          raise Exception("Certificate issuance timed out")
+                      
+                      # Step 4: Import the certificate to activate the CA
+                      print("Step 4: Importing certificate to activate the CA...")
+                      try:
+                          acmpca.import_certificate_authority_certificate(
+                              CertificateAuthorityArn=ca_arn,
+                              Certificate=certificate
+                          )
+                          print("Certificate imported successfully")
+                      except Exception as e:
+                          print(f"Error importing certificate: {str(e)}")
+                          raise
                       
                       # Wait for CA to become ACTIVE
                       print("Waiting for CA to become ACTIVE...")
-                      max_retries = 20
+                      max_retries = 10
                       for i in range(max_retries):
                           try:
                               ca_response = acmpca.describe_certificate_authority(
@@ -166,17 +171,11 @@ Resources:
                                   print("CA is now ACTIVE")
                                   break
                               else:
-                                  print(f"CA is in state {status}, waiting {retry_interval} seconds...")
-                                  time.sleep(retry_interval)
+                                  print(f"CA is in state {status}, waiting...")
+                                  time.sleep(10)
                           except Exception as e:
                               print(f"Error checking CA status: {str(e)}")
-                              time.sleep(retry_interval)
-                      else:
-                          raise Exception(f"CA did not reach ACTIVE state after {max_retries} attempts")
-                      
-                      # Clean up temporary files
-                      import shutil
-                      shutil.rmtree(temp_dir)
+                              time.sleep(10)
                       
                       response_data = {
                           'CertificateAuthorityArn': ca_arn,
