@@ -43,6 +43,7 @@ Resources:
                   - 'acm-pca:IssueCertificate'
                   - 'acm-pca:ImportCertificateAuthorityCertificate'
                   - 'acm-pca:UpdateCertificateAuthority'
+                  - 'acm-pca:DescribeCertificateAuthority'
                 Resource: !GetAtt PrivateCA.Arn
 
   # Lambda function to handle CA activation
