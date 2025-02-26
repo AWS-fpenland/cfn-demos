@@ -18,25 +18,122 @@ Resources:
         CrlConfiguration:
           Enabled: false
 
-  # Create a Certificate for the CA (self-signed)
-  RootCertificate:
-    Type: 'AWS::ACMPCA::Certificate'
+  # Lambda execution role for the custom resource
+  LambdaExecutionRole:
+    Type: 'AWS::IAM::Role'
     Properties:
-      CertificateAuthorityArn: !Ref PrivateCA
-      CertificateSigningRequest: !GetAtt PrivateCA.CertificateSigningRequest
-      SigningAlgorithm: SHA256WITHRSA
-      Validity:
-        Type: DAYS
-        Value: 3650
-        
-  # Activate the CA
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: ACMPCAAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'acm-pca:GetCertificateAuthorityCertificate'
+                  - 'acm-pca:GetCertificateAuthorityCsr'
+                  - 'acm-pca:IssueCertificate'
+                  - 'acm-pca:ImportCertificateAuthorityCertificate'
+                  - 'acm-pca:UpdateCertificateAuthority'
+                Resource: !GetAtt PrivateCA.Arn
+
+  # Lambda function to handle CA activation
+  CAActivationFunction:
+    Type: 'AWS::Lambda::Function'
+    DependsOn: PrivateCA
+    Properties:
+      Handler: 'index.handler'
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: 'python3.9'
+      Timeout: 300
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import cfnresponse
+          import base64
+          import time
+
+          def handler(event, context):
+              response_data = {}
+              try:
+                  if event['RequestType'] in ['Create', 'Update']:
+                      # Get the CA ARN from the event
+                      ca_arn = event['ResourceProperties']['CertificateAuthorityArn']
+                      
+                      # Create clients
+                      acmpca = boto3.client('acm-pca')
+                      
+                      # Get the CSR from the CA
+                      csr_response = acmpca.get_certificate_authority_csr(
+                          CertificateAuthorityArn=ca_arn
+                      )
+                      csr = csr_response['Csr']
+                      
+                      # Issue a certificate using the CSR
+                      issue_response = acmpca.issue_certificate(
+                          CertificateAuthorityArn=ca_arn,
+                          Csr=csr,
+                          SigningAlgorithm='SHA256WITHRSA',
+                          Validity={
+                              'Value': 3650,
+                              'Type': 'DAYS'
+                          },
+                          IdempotencyToken='selfSignedCert'
+                      )
+                      certificate_arn = issue_response['CertificateArn']
+                      
+                      # Wait for certificate to be issued
+                      waiter = acmpca.get_waiter('certificate_issued')
+                      waiter.wait(
+                          CertificateAuthorityArn=ca_arn,
+                          CertificateArn=certificate_arn
+                      )
+                      
+                      # Get the certificate
+                      cert_response = acmpca.get_certificate(
+                          CertificateAuthorityArn=ca_arn,
+                          CertificateArn=certificate_arn
+                      )
+                      certificate = cert_response['Certificate']
+                      
+                      # Import the certificate to activate the CA
+                      acmpca.import_certificate_authority_certificate(
+                          CertificateAuthorityArn=ca_arn,
+                          Certificate=certificate
+                      )
+                      
+                      # Update CA status to ACTIVE
+                      acmpca.update_certificate_authority(
+                          CertificateAuthorityArn=ca_arn,
+                          Status='ACTIVE'
+                      )
+                      
+                      response_data = {
+                          'CertificateAuthorityArn': ca_arn,
+                          'Message': 'CA activated successfully'
+                      }
+                      
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data)
+              except Exception as e:
+                  print(f"Error: {str(e)}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {"Error": str(e)})
+
+  # Custom resource to activate the CA
   CertificateAuthorityActivation:
-    Type: 'AWS::ACMPCA::CertificateAuthorityActivation'
-    DependsOn: RootCertificate
+    Type: 'Custom::CertificateAuthorityActivation'
+    DependsOn: CAActivationFunction
     Properties:
-      CertificateAuthorityArn: !Ref PrivateCA
-      Status: ACTIVE
-      Certificate: !GetAtt RootCertificate.Certificate
+      ServiceToken: !GetAtt CAActivationFunction.Arn
+      CertificateAuthorityArn: !GetAtt PrivateCA.Arn
 
   # Create an S3 bucket
   DemoS3Bucket:
