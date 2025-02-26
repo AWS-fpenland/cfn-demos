@@ -241,7 +241,7 @@ Resources:
     Properties:
       Name: 'DemoTrustAnchor'
       Source:
-        SourceType: 'CERTIFICATE_BUNDLE'
+        SourceType: 'AWS_ACM_PCA'
         SourceData:
           AcmPcaArn: !Ref PrivateCA
 
