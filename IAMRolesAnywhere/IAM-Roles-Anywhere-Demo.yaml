@@ -237,6 +237,7 @@ Resources:
   # Create IAM Roles Anywhere Trust Anchor
   TrustAnchor:
     Type: 'AWS::RolesAnywhere::TrustAnchor'
+    DependsOn: CertificateAuthorityActivation
     Properties:
       Name: 'DemoTrustAnchor'
       Source:
