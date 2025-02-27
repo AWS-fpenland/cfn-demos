@@ -230,12 +230,14 @@ Resources:
           - Effect: Allow
             Principal:
               Service: 'rolesanywhere.amazonaws.com'
-            Action: 'sts:AssumeRole'
+            Action: 
+              - 'sts:AssumeRole'
+              - 'sts:TagSession'
+              - 'sts:SetSourceIdentity'
             Condition:
-              StringEquals:
-                'aws:SourceAccount': !Ref 'AWS::AccountId'
               ArnEquals:
-                'aws:SourceArn': !Ref TrustAnchor                      
+                'rolesanywhere:TrustAnchorArn': !GetAtt TrustAnchor.TrustAnchorArn
+                    
       ManagedPolicyArns:
         - !Ref S3AccessPolicy
 
