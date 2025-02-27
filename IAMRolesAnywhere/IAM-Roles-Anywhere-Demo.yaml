@@ -236,8 +236,8 @@ Resources:
                 'aws:SourceAccount': !Ref 'AWS::AccountId'
               ArnEquals:
                 'aws:SourceArn': !Ref TrustAnchor                      
-            ManagedPolicyArns:
-              - !Ref S3AccessPolicy
+      ManagedPolicyArns:
+        - !Ref S3AccessPolicy
 
   # Create IAM Roles Anywhere Trust Anchor
   TrustAnchor:
