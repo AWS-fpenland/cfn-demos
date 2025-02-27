@@ -237,7 +237,7 @@ Resources:
               - 'sts:SetSourceIdentity'
             Condition:
               ArnEquals:
-                'rolesanywhere:TrustAnchorArn': !GetAtt TrustAnchor.TrustAnchorArn              
+                'aws:SourceArn': !GetAtt TrustAnchor.TrustAnchorArn              
       ManagedPolicyArns:
         - !Ref S3AccessPolicy
 
