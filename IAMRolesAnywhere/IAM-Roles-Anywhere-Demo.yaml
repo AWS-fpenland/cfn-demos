@@ -231,8 +231,13 @@ Resources:
             Principal:
               Service: 'rolesanywhere.amazonaws.com'
             Action: 'sts:AssumeRole'
-      ManagedPolicyArns:
-        - !Ref S3AccessPolicy
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref 'AWS::AccountId'
+              ArnEquals:
+                'aws:SourceArn': !Ref TrustAnchor                      
+            ManagedPolicyArns:
+              - !Ref S3AccessPolicy
 
   # Create IAM Roles Anywhere Trust Anchor
   TrustAnchor:
@@ -240,6 +245,7 @@ Resources:
     DependsOn: CertificateAuthorityActivation
     Properties:
       Name: 'DemoTrustAnchor'
+      Enabled: true
       Source:
         SourceType: 'AWS_ACM_PCA'
         SourceData:
@@ -250,6 +256,7 @@ Resources:
     Type: 'AWS::RolesAnywhere::Profile'
     Properties:
       Name: 'DemoProfile'
+      Enabled: true
       RoleArns:
         - !GetAtt DemoIAMRole.Arn
 
