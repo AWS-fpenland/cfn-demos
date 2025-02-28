@@ -98,6 +98,7 @@ Resources:
     Type: 'AWS::IAM::ManagedPolicy'
     Properties:
       Description: 'Policy to allow S3 access for IAM Roles Anywhere demo'
+      ManagedPolicyName: !Join ['-', ['S3AccessPolicy', !Ref OrgName]]
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -116,7 +117,7 @@ Resources:
   DemoIAMRole:
     Type: 'AWS::IAM::Role'
     Properties:
-      RoleName: 'IAMRolesAnywhereDemoRole'
+      RoleName: !Join ['-', ['IAMRolesAnywhereDemoRole', !Ref OrgName]]
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -138,7 +139,7 @@ Resources:
     Type: 'AWS::RolesAnywhere::TrustAnchor'
     DependsOn: PCAActivation
     Properties:
-      Name: 'DemoTrustAnchor'
+      Name: !Join ['-', ['DemoTrustAnchor', !Ref OrgName]]
       Enabled: true
       Source:
         SourceType: 'AWS_ACM_PCA'
@@ -149,7 +150,7 @@ Resources:
   Profile:
     Type: 'AWS::RolesAnywhere::Profile'
     Properties:
-      Name: 'DemoProfile'
+      Name: !Join ['-', ['DemoProfile', !Ref OrgName]]
       Enabled: true
       RoleArns:
         - !GetAtt DemoIAMRole.Arn
