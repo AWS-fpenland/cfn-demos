@@ -77,16 +77,19 @@ Resources:
       Certificate: !GetAtt PCACert.Certificate
       Status: 'ACTIVE'
 
-  # Create an S3 bucket
   DemoS3Bucket:
-    Type: 'AWS::S3::Bucket'
+    Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Join 
+      BucketName: !Join
         - '-'
-        - - !Join ['-', !Split [' ', !Lower: !Ref OrgName]]
-          - 'bucket'
-          - !Ref 'AWS::AccountId'
-          - !Ref 'AWS::Region'
+        - - !Join
+            - '-'
+            - !Split [' ', !ToLower !Ref OrgName]
+          - bucket
+          - !Select 
+            - 0
+            - !Split ['-', !Ref AWS::AccountId]
+          - !Ref AWS::Region
   
   # Create an IAM policy for S3 access
   S3AccessPolicy:
