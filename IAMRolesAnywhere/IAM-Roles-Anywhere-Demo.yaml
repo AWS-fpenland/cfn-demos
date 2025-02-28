@@ -81,8 +81,13 @@ Resources:
   DemoS3Bucket:
     Type: 'AWS::S3::Bucket'
     Properties:
-      BucketName: !Sub 'iamra-demo-bucket-${AWS::AccountId}-${AWS::Region}'
-
+      BucketName: !Join 
+        - '-'
+        - - !Join ['-', !Split [' ', !Ref OrgName]]
+          - 'bucket'
+          - !Ref 'AWS::AccountId'
+          - !Ref 'AWS::Region'
+  
   # Create an IAM policy for S3 access
   S3AccessPolicy:
     Type: 'AWS::IAM::ManagedPolicy'
