@@ -28,8 +28,10 @@ Parameters:
     Description: Enter the country for the subject of the CA.
   OrgName:
     Type: String
-    Default: 'Demo Organization'
+    Default: 'demo-organization'
     Description: Enter the organization name for the subject of the CA.
+    ConstraintDescription: must use all lower case, otherwise certificate will fail.
+    AllowedPattern: '^[a-z0-9- ]+$'
   CACommonName:
     Type: String
     Default: 'demo.root.ca'
@@ -84,7 +86,7 @@ Resources:
         - '-'
         - - !Join
             - '-'
-            - !Split [' ', !ToLower !Ref OrgName]
+            - !Split [' ', !Ref OrgName]
           - bucket
           - !Select 
             - 0
