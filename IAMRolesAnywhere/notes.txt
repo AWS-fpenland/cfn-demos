@@ -1,0 +1,19 @@
+aws acm-pca issue-certificate \
+--certificate-authority-arn arn:aws:acm-pca:us-east-1:056689112963:certificate-authority/783d91c3-4533-42ae-b9c2-fb9cb5ffd02e \
+--csr fileb://csr.pem \
+--signing-algorithm SHA256WITHRSA \
+--validity Value=365,Type=DAYS \
+--region us-east-1 \
+--profile org-master
+
+aws acm-pca get-certificate \
+--certificate-authority-arn arn:aws:acm-pca:us-east-1:056689112963:certificate-authority/783d91c3-4533-42ae-b9c2-fb9cb5ffd02e \
+--certificate-arn arn:aws:acm-pca:us-east-1:056689112963:certificate-authority/783d91c3-4533-42ae-b9c2-fb9cb5ffd02e/certificate/2f677fab0722a547889d4a256e604ead \
+--output text > certificate.pem \
+--region us-east-1 \
+--profile org-master
+
+
+aws acm-pca issue-certificate --certificate-authority-arn arn:aws:acm-pca:us-east-1:056689112963:certificate-authority/783d91c3-4533-42ae-b9c2-fb9cb5ffd02e --csr fileb://csr.pem --signing-algorithm SHA256WITHRSA --validity Value=365,Type=DAYS --region us-east-1 --profile org-master
+
+aws acm-pca get-certificate --certificate-authority-arn arn:aws:acm-pca:us-east-1:056689112963:certificate-authority/783d91c3-4533-42ae-b9c2-fb9cb5ffd02e --certificate-arn arn:aws:acm-pca:us-east-1:056689112963:certificate-authority/783d91c3-4533-42ae-b9c2-fb9cb5ffd02e/certificate/6ebf98db798a769ce25ae66d54ba0d77 --output text > certificate.pem --region us-east-1 --profile org-master
