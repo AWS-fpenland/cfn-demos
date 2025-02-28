@@ -83,7 +83,7 @@ Resources:
     Properties:
       BucketName: !Join 
         - '-'
-        - - !Join ['-', !Split [' ', !Ref OrgName]]
+        - - !Join ['-', !Split [' ', !Lower: !Ref OrgName]]
           - 'bucket'
           - !Ref 'AWS::AccountId'
           - !Ref 'AWS::Region'
