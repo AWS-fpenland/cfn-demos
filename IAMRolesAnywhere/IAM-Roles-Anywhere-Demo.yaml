@@ -1,211 +1,104 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: 'IAM Roles Anywhere Demo with ACM PKI Infrastructure'
 
+Parameters:
+  SigningAlgorithm:
+    Type: String
+    Default: SHA256WITHRSA
+    AllowedValues:
+      - SHA256WITHECDSA
+      - SHA256WITHRSA
+      - SHA384WITHECDSA
+      - SHA384WITHRSA
+      - SHA512WITHECDSA
+      - SHA512WITHRSA
+    Description: Enter a signing algorithm. Default is SHA256WITHRSA.
+  KeyAlgorithm:
+    Type: String
+    Default: RSA_2048
+    AllowedValues:
+      - RSA_2048
+      - EC_prime256v1
+      - EC_secp384r1
+      - RSA_4096
+    Description: Enter a key algorithm. Default is RSA_2048.
+  CACountry:
+    Type: String
+    Default: US
+    Description: Enter the country for the subject of the CA.
+  OrgName:
+    Type: String
+    Default: 'demo-organization'
+    Description: Enter the organization name for the subject of the CA.
+    ConstraintDescription: must use all lower case, otherwise certificate will fail.
+    AllowedPattern: '^[a-z0-9- ]+$'
+  CACommonName:
+    Type: String
+    Default: 'demo.root.ca'
+    Description: Enter the common name for the subject of the CA.
+  CACertValidity:
+    Type: Number
+    Default: 10
+    MinValue: 1
+    Description: Enter the number of years the CA certificate is valid for.
+
 Resources:
   # Create a Private Certificate Authority
   PrivateCA:
     Type: 'AWS::ACMPCA::CertificateAuthority'
     Properties:
       Type: ROOT
-      KeyAlgorithm: RSA_2048
-      SigningAlgorithm: SHA256WITHRSA
+      KeyAlgorithm: !Ref KeyAlgorithm
+      SigningAlgorithm: !Ref SigningAlgorithm
       Subject:
-        Country: US
-        Organization: Demo Organization
+        Country: !Ref CACountry
+        Organization: !Ref OrgName
         OrganizationalUnit: IT
-        CommonName: Demo Root CA
+        CommonName: !Ref CACommonName
       RevocationConfiguration:
         CrlConfiguration:
           Enabled: false
 
-  # Lambda execution role for the custom resource
-  LambdaExecutionRole:
-    Type: 'AWS::IAM::Role'
+  # Create a certificate for the CA
+  PCACert:
+    Type: AWS::ACMPCA::Certificate
     Properties:
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: 'sts:AssumeRole'
-      ManagedPolicyArns:
-        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
-      Policies:
-        - PolicyName: ACMPCAAccess
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - 'acm-pca:GetCertificateAuthorityCertificate'
-                  - 'acm-pca:GetCertificateAuthorityCsr'
-                  - 'acm-pca:DescribeCertificateAuthority'
-                  - 'acm-pca:IssueCertificate'
-                  - 'acm-pca:GetCertificate'
-                  - 'acm-pca:ImportCertificateAuthorityCertificate'
-                Resource: !GetAtt PrivateCA.Arn
-
-  # Lambda function for CA activation - NO OPENSSL, AWS API ONLY
-  CAActivationFunction:
-    Type: 'AWS::Lambda::Function'
-    DependsOn: PrivateCA
-    Properties:
-      Handler: 'index.handler'
-      Role: !GetAtt LambdaExecutionRole.Arn
-      Runtime: 'python3.9'
-      Timeout: 600
-      Code:
-        ZipFile: |
-          import json
-          import boto3
-          import cfnresponse
-          import time
-          from botocore.exceptions import ClientError
-
-          def handler(event, context):
-              print("FUNCTION VERSION: NO OPENSSL, AWS API ONLY - V3.0")
-              response_data = {}
-              
-              try:
-                  if event['RequestType'] in ['Create', 'Update']:
-                      # Get the CA ARN from the event
-                      ca_arn = event['ResourceProperties']['CertificateAuthorityArn']
-                      
-                      # Create clients
-                      acmpca = boto3.client('acm-pca')
-                      
-                      # Check CA status
-                      print(f"Checking status of CA {ca_arn}...")
-                      ca_response = acmpca.describe_certificate_authority(
-                          CertificateAuthorityArn=ca_arn
-                      )
-                      status = ca_response['CertificateAuthority']['Status']
-                      print(f"Current CA status: {status}")
-                      
-                      # If CA is already active, we're done
-                      if status == 'ACTIVE':
-                          print("CA is already ACTIVE, nothing to do")
-                          response_data = {
-                              'CertificateAuthorityArn': ca_arn,
-                              'Message': 'CA already active'
-                          }
-                          cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data)
-                          return
-                      
-                      # Step 1: Get the CSR from the CA
-                      print("Step 1: Requesting CSR from the CA...")
-                      csr_response = acmpca.get_certificate_authority_csr(
-                          CertificateAuthorityArn=ca_arn
-                      )
-                      csr = csr_response['Csr']
-                      print(f"Successfully obtained CSR, length: {len(csr)} characters")
-                      
-                      # Step 2: Issue a certificate using the CSR with the RootCACertificate template
-                      print("Step 2: Issuing self-signed root certificate...")
-                      try:
-                          issue_response = acmpca.issue_certificate(
-                              CertificateAuthorityArn=ca_arn,
-                              Csr=csr,
-                              SigningAlgorithm='SHA256WITHRSA',
-                              TemplateArn='arn:aws:acm-pca:::template/RootCACertificate/V1',
-                              Validity={
-                                  'Value': 3650,
-                                  'Type': 'DAYS'
-                              },
-                              IdempotencyToken='selfSignedRootCertV3'
-                          )
-                          certificate_arn = issue_response['CertificateArn']
-                          print(f"Certificate issuance initiated, ARN: {certificate_arn}")
-                      except ClientError as e:
-                          error_code = e.response['Error']['Code']
-                          error_message = e.response['Error']['Message']
-                          print(f"Error issuing certificate: {error_code} - {error_message}")
-                          raise
-                      
-                      # Step 3: Wait for and retrieve the certificate
-                      print("Step 3: Waiting for certificate to be issued...")
-                      max_retries = 30
-                      for i in range(max_retries):
-                          try:
-                              cert_response = acmpca.get_certificate(
-                                  CertificateAuthorityArn=ca_arn,
-                                  CertificateArn=certificate_arn
-                              )
-                              certificate = cert_response['Certificate']
-                              print(f"Certificate has been issued successfully, length: {len(certificate)} characters")
-                              break
-                          except acmpca.exceptions.RequestInProgressException:
-                              print(f"Certificate issuance in progress (attempt {i+1}/{max_retries})...")
-                              time.sleep(5)
-                          except Exception as e:
-                              print(f"Error getting certificate (attempt {i+1}/{max_retries}): {str(e)}")
-                              time.sleep(5)
-                      else:
-                          raise Exception("Certificate issuance timed out")
-                      
-                      # Step 4: Import the certificate to activate the CA
-                      print("Step 4: Importing certificate to activate the CA...")
-                      try:
-                          acmpca.import_certificate_authority_certificate(
-                              CertificateAuthorityArn=ca_arn,
-                              Certificate=certificate
-                          )
-                          print("Certificate imported successfully")
-                      except Exception as e:
-                          print(f"Error importing certificate: {str(e)}")
-                          raise
-                      
-                      # Wait for CA to become ACTIVE
-                      print("Waiting for CA to become ACTIVE...")
-                      max_retries = 10
-                      for i in range(max_retries):
-                          try:
-                              ca_response = acmpca.describe_certificate_authority(
-                                  CertificateAuthorityArn=ca_arn
-                              )
-                              status = ca_response['CertificateAuthority']['Status']
-                              print(f"Current CA status: {status}")
-                              
-                              if status == 'ACTIVE':
-                                  print("CA is now ACTIVE")
-                                  break
-                              else:
-                                  print(f"CA is in state {status}, waiting...")
-                                  time.sleep(10)
-                          except Exception as e:
-                              print(f"Error checking CA status: {str(e)}")
-                              time.sleep(10)
-                      
-                      response_data = {
-                          'CertificateAuthorityArn': ca_arn,
-                          'Message': 'CA activated successfully'
-                      }
-                  
-                  cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data)
-              except Exception as e:
-                  print(f"Error: {str(e)}")
-                  cfnresponse.send(event, context, cfnresponse.FAILED, {"Error": str(e)})
-
-  # Custom resource to activate the CA
-  CertificateAuthorityActivation:
-    Type: 'Custom::CertificateAuthorityActivation'
-    DependsOn: CAActivationFunction
-    Properties:
-      ServiceToken: !GetAtt CAActivationFunction.Arn
       CertificateAuthorityArn: !GetAtt PrivateCA.Arn
+      CertificateSigningRequest: !GetAtt PrivateCA.CertificateSigningRequest
+      SigningAlgorithm: !Ref SigningAlgorithm
+      TemplateArn: 'arn:aws:acm-pca:::template/RootCACertificate/V1'
+      Validity:
+        Type: 'YEARS'
+        Value: !Ref CACertValidity
 
-  # Create an S3 bucket
-  DemoS3Bucket:
-    Type: 'AWS::S3::Bucket'
+  # Activate the CA with the certificate
+  PCAActivation:
+    Type: AWS::ACMPCA::CertificateAuthorityActivation
     Properties:
-      BucketName: !Sub 'iamra-demo-bucket-${AWS::AccountId}-${AWS::Region}'
+      CertificateAuthorityArn: !GetAtt PrivateCA.Arn
+      Certificate: !GetAtt PCACert.Certificate
+      Status: 'ACTIVE'
 
+  DemoS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Join
+        - '-'
+        - - !Join
+            - '-'
+            - !Split [' ', !Ref OrgName]
+          - bucket
+          - !Select 
+            - 0
+            - !Split ['-', !Ref AWS::AccountId]
+          - !Ref AWS::Region
+  
   # Create an IAM policy for S3 access
   S3AccessPolicy:
     Type: 'AWS::IAM::ManagedPolicy'
     Properties:
       Description: 'Policy to allow S3 access for IAM Roles Anywhere demo'
+      ManagedPolicyName: !Join ['-', ['S3AccessPolicy', !Ref OrgName]]
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -224,7 +117,7 @@ Resources:
   DemoIAMRole:
     Type: 'AWS::IAM::Role'
     Properties:
-      RoleName: 'IAMRolesAnywhereDemoRole'
+      RoleName: !Join ['-', ['IAMRolesAnywhereDemoRole', !Ref OrgName]]
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -244,20 +137,20 @@ Resources:
   # Create IAM Roles Anywhere Trust Anchor
   TrustAnchor:
     Type: 'AWS::RolesAnywhere::TrustAnchor'
-    DependsOn: CertificateAuthorityActivation
+    DependsOn: PCAActivation
     Properties:
-      Name: 'DemoTrustAnchor'
+      Name: !Join ['-', ['DemoTrustAnchor', !Ref OrgName]]
       Enabled: true
       Source:
         SourceType: 'AWS_ACM_PCA'
         SourceData:
-          AcmPcaArn: !Ref PrivateCA
+          AcmPcaArn: !GetAtt PrivateCA.Arn
 
   # Create IAM Roles Anywhere Profile
   Profile:
     Type: 'AWS::RolesAnywhere::Profile'
     Properties:
-      Name: 'DemoProfile'
+      Name: !Join ['-', ['DemoProfile', !Ref OrgName]]
       Enabled: true
       RoleArns:
         - !GetAtt DemoIAMRole.Arn
@@ -269,15 +162,15 @@ Outputs:
   
   PrivateCAArn:
     Description: 'ARN of the Private Certificate Authority'
-    Value: !Ref PrivateCA
+    Value: !GetAtt PrivateCA.Arn
   
   TrustAnchorArn:
     Description: 'ARN of the IAM Roles Anywhere Trust Anchor'
-    Value: !Ref TrustAnchor
+    Value: !GetAtt TrustAnchor.TrustAnchorArn
   
   ProfileArn:
     Description: 'ARN of the IAM Roles Anywhere Profile'
-    Value: !Ref Profile
+    Value: !GetAtt Profile.ProfileArn
   
   IAMRoleArn:
     Description: 'ARN of the IAM Role that can be assumed'
@@ -296,7 +189,7 @@ Outputs:
          aws acm-pca issue-certificate \
            --certificate-authority-arn ${PrivateCA} \
            --csr fileb://csr.pem \
-           --signing-algorithm SHA256WITHRSA \
+           --signing-algorithm ${SigningAlgorithm} \
            --validity Value=365,Type=DAYS
 
       4. Retrieve the certificate:
@@ -312,7 +205,7 @@ Outputs:
 
       7. Configure credential-process in your AWS CLI config file:
          [profile iamra-demo]
-         credential_process = aws_signing_helper credential-process --certificate certificate.pem --private-key private-key.pem --trust-anchor-arn ${TrustAnchor} --profile-arn ${Profile} --role-arn ${DemoIAMRole.Arn}
+         credential_process = aws_signing_helper credential-process --certificate certificate.pem --private-key private-key.pem --trust-anchor-arn ${TrustAnchor.TrustAnchorArn} --profile-arn ${Profile.ProfileArn} --role-arn ${DemoIAMRole.Arn}
 
       8. Test access to the S3 bucket:
          aws s3 ls s3://${DemoS3Bucket} --profile iamra-demo

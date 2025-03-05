@@ -1,4 +1,10 @@
 template-file-path: IAMRolesAnywhere/IAM-Roles-Anywhere-Demo.yaml
-
+Parameters:
+    SigningAlgorithm: SHA256WITHRSA
+    KeyAlgorithm: RSA_2048
+    CACountry: US
+    OrgName: 'Demo Organization Version 2'
+    CACommonName: 'demo2.root.ca'
+    CACertValidity: 10
 tags:
-    environment: 'demo'
+    environment: 'demo2'
