@@ -1,3 +1,8 @@
+#files
+notes.txt
+IAMRolesAnywhere/notes.txt
+#certs
+*.pem
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -8,6 +13,7 @@ __pycache__/
 
 # Distribution / packaging
 .Python
+test/
 build/
 develop-eggs/
 dist/
