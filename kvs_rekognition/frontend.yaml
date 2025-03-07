@@ -120,7 +120,7 @@ Resources:
     Properties:
       Handler: index.handler
       Role: !GetAtt S3DeploymentRole.Arn
-      Runtime: nodejs18.x
+      Runtime: nodejs14.x
       Timeout: 300
       MemorySize: 128
       Code:
