@@ -1,0 +1,210 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Rekognition Real-time Object Detection Demo - WebSocket Stack'
+
+Parameters:
+  StackName:
+    Type: String
+    Description: Name of the parent stack
+    
+  ConnectionsTableName:
+    Type: String
+    Description: Name of the DynamoDB table for WebSocket connections
+
+Resources:
+  # WebSocket Handler Lambda
+  WebSocketHandlerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${StackName}-websocket-handler"
+      Runtime: nodejs18.x
+      Handler: index.handler
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          CONNECTIONS_TABLE: !Ref ConnectionsTableName
+      Role: !GetAtt WebSocketHandlerRole.Arn
+      Code:
+        ZipFile: |
+          const AWS = require('aws-sdk');
+          const dynamoDB = new AWS.DynamoDB.DocumentClient();
+
+          exports.handler = async (event) => {
+            const { connectionId, routeKey } = event.requestContext;
+            
+            // Handle different WebSocket events
+            switch (routeKey) {
+              case '$connect':
+                // Store new connection
+                await dynamoDB.put({
+                  TableName: process.env.CONNECTIONS_TABLE,
+                  Item: {
+                    connectionId,
+                    timestamp: Date.now(),
+                    ttl: Math.floor(Date.now() / 1000) + 7200 // 2 hour TTL
+                  }
+                }).promise();
+                return { statusCode: 200, body: 'Connected' };
+                
+              case '$disconnect':
+                // Remove connection
+                await dynamoDB.delete({
+                  TableName: process.env.CONNECTIONS_TABLE,
+                  Key: { connectionId }
+                }).promise();
+                return { statusCode: 200, body: 'Disconnected' };
+                
+              case '$default':
+                // Handle incoming messages if needed
+                try {
+                  const body = JSON.parse(event.body);
+                  console.log('Received message:', body);
+                  // Process client messages here if needed
+                  return { statusCode: 200, body: 'Message received' };
+                } catch (err) {
+                  return { statusCode: 400, body: 'Invalid message format' };
+                }
+                
+              default:
+                return { statusCode: 400, body: 'Unsupported route' };
+            }
+          };
+
+  # IAM Role for WebSocket Handler Lambda
+  WebSocketHandlerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:DeleteItem
+                Resource: !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ConnectionsTableName}"
+
+  # WebSocket API
+  WebSocketApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub "${StackName}-websocket-api"
+      ProtocolType: WEBSOCKET
+      RouteSelectionExpression: "$request.body.action"
+
+  WebSocketStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref WebSocketApi
+      StageName: prod
+      AutoDeploy: true
+
+  ConnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: $connect
+      AuthorizationType: NONE
+      OperationName: ConnectRoute
+      Target: !Join 
+        - /
+        - - integrations
+          - !Ref ConnectIntegration
+
+  DisconnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: $disconnect
+      AuthorizationType: NONE
+      OperationName: DisconnectRoute
+      Target: !Join 
+        - /
+        - - integrations
+          - !Ref DisconnectIntegration
+
+  DefaultRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: $default
+      AuthorizationType: NONE
+      OperationName: DefaultRoute
+      Target: !Join 
+        - /
+        - - integrations
+          - !Ref DefaultIntegration
+
+  ConnectIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WebSocketHandlerFunction.Arn}/invocations
+
+  DisconnectIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WebSocketHandlerFunction.Arn}/invocations
+
+  DefaultIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WebSocketHandlerFunction.Arn}/invocations
+
+  WebSocketLambdaPermissionConnect:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref WebSocketHandlerFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/*/$connect
+
+  WebSocketLambdaPermissionDisconnect:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref WebSocketHandlerFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/*/$disconnect
+
+  WebSocketLambdaPermissionDefault:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref WebSocketHandlerFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/*/$default
+
+Outputs:
+  WebSocketApiId:
+    Description: ID of the WebSocket API
+    Value: !Ref WebSocketApi
+    Export:
+      Name: !Sub "${StackName}-WebSocketApiId"
+      
+  WebSocketApiEndpoint:
+    Description: Endpoint URL for WebSocket API
+    Value: !Sub wss://${WebSocketApi}.execute-api.${AWS::Region}.amazonaws.com/${WebSocketStage}
+    Export:
+      Name: !Sub "${StackName}-WebSocketApiEndpoint"
+      
+  WebSocketStageName:
+    Description: Stage name for the WebSocket API
+    Value: !Ref WebSocketStage
+    Export:
+      Name: !Sub "${StackName}-WebSocketStageName"

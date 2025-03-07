@@ -1,0 +1,51 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Rekognition Real-time Object Detection Demo - Video Processing Stack'
+
+Parameters:
+  StackName:
+    Type: String
+    Description: Name of the parent stack
+
+Resources:
+  # Kinesis Video Stream
+  VideoStream:
+    Type: AWS::KinesisVideo::Stream
+    Properties:
+      Name: !Sub "${StackName}-video-stream"
+      DataRetentionInHours: 24
+      MediaType: "video/h264"
+
+  # IAM Role for Rekognition
+  RekognitionServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${StackName}-RekognitionServiceRole"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: rekognition.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonKinesisVideoStreamsReadOnlyAccess
+        - arn:aws:iam::aws:policy/AmazonKinesisFullAccess
+
+Outputs:
+  VideoStreamName:
+    Description: Name of the Kinesis Video Stream
+    Value: !Ref VideoStream
+    Export:
+      Name: !Sub "${StackName}-VideoStreamName"
+
+  VideoStreamArn:
+    Description: ARN of the Kinesis Video Stream
+    Value: !GetAtt VideoStream.Arn
+    Export:
+      Name: !Sub "${StackName}-VideoStreamArn"
+      
+  RekognitionRoleArn:
+    Description: ARN of the IAM role for Rekognition
+    Value: !GetAtt RekognitionServiceRole.Arn
+    Export:
+      Name: !Sub "${StackName}-RekognitionRoleArn"

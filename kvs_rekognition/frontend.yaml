@@ -1,0 +1,622 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Rekognition Real-time Object Detection Demo - Frontend Stack'
+
+Parameters:
+  StackName:
+    Type: String
+    Description: Name of the parent stack
+    
+  WebSocketEndpoint:
+    Type: String
+    Description: Endpoint for the WebSocket API
+
+Resources:
+  # S3 Bucket for Web App (Private)
+  WebAppBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      # Make bucket private - content served through CloudFront only
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: error.html
+
+  # CloudFront Origin Access Identity
+  CloudFrontOAI:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: !Sub "OAI for ${StackName} web app"
+
+  # S3 Bucket Policy for CloudFront Access
+  WebAppBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebAppBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity ${CloudFrontOAI}"
+            Action: s3:GetObject
+            Resource: !Sub "${WebAppBucket.Arn}/*"
+
+  # CloudFront Distribution
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Origins:
+          - DomainName: !GetAtt WebAppBucket.RegionalDomainName
+            Id: S3Origin
+            S3OriginConfig:
+              OriginAccessIdentity: !Sub "origin-access-identity/cloudfront/${CloudFrontOAI}"
+        Enabled: true
+        DefaultRootObject: index.html
+        DefaultCacheBehavior:
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          CachedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          TargetOriginId: S3Origin
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: none
+          ViewerProtocolPolicy: redirect-to-https
+          # Short TTL for development/testing
+          MinTTL: 60
+          DefaultTTL: 300
+          MaxTTL: 600
+          # Enable compression
+          Compress: true
+        PriceClass: PriceClass_100 # Use only North America and Europe edge locations to save cost
+        CustomErrorResponses:
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+        HttpVersion: http2
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+
+  # Custom Resources for S3 Content Deployment
+  S3DeploymentRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                Resource: !Sub "${WebAppBucket.Arn}/*"
+
+  S3DeploymentFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: !GetAtt S3DeploymentRole.Arn
+      Runtime: nodejs18.x
+      Timeout: 300
+      MemorySize: 128
+      Code:
+        ZipFile: |
+          const AWS = require('aws-sdk');
+          const s3 = new AWS.S3();
+          const response = require('cfn-response');
+          
+          exports.handler = async (event, context) => {
+            try {
+              console.log('Event:', JSON.stringify(event, null, 2));
+              
+              const bucketName = event.ResourceProperties.BucketName;
+              const websocketEndpoint = event.ResourceProperties.WebSocketEndpoint;
+              
+              if (event.RequestType === 'Create' || event.RequestType === 'Update') {
+                // HTML content with WebSocket endpoint placeholder
+                const htmlContent = `<!DOCTYPE html>
+                <html lang="en">
+                <head>
+                  <meta charset="UTF-8">
+                  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                  <title>Real-time Object Detection with AWS Rekognition</title>
+                  <style>
+                    body {
+                      font-family: Arial, sans-serif;
+                      margin: 0;
+                      padding: 20px;
+                      background-color: #f5f5f5;
+                    }
+                    .container {
+                      max-width: 1200px;
+                      margin: 0 auto;
+                    }
+                    .header {
+                      text-align: center;
+                      margin-bottom: 20px;
+                    }
+                    .video-container {
+                      position: relative;
+                      margin: 0 auto;
+                      width: 100%;
+                      max-width: 800px;
+                      background-color: #000;
+                      border-radius: 8px;
+                      overflow: hidden;
+                    }
+                    #videoElement {
+                      width: 100%;
+                      display: block;
+                    }
+                    .canvas-overlay {
+                      position: absolute;
+                      top: 0;
+                      left: 0;
+                      width: 100%;
+                      height: 100%;
+                      pointer-events: none;
+                    }
+                    .status {
+                      padding: 10px;
+                      margin: 10px 0;
+                      background-color: #fff;
+                      border-radius: 4px;
+                      text-align: center;
+                    }
+                    .detection-list {
+                      background-color: #fff;
+                      border-radius: 8px;
+                      padding: 15px;
+                      margin-top: 20px;
+                      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                    }
+                    .detection-item {
+                      display: flex;
+                      justify-content: space-between;
+                      padding: 10px;
+                      border-bottom: 1px solid #eee;
+                    }
+                    .detection-item:last-child {
+                      border-bottom: none;
+                    }
+                    .confidence {
+                      font-weight: bold;
+                      color: #2a7d4f;
+                    }
+                    .config-form {
+                      background-color: #fff;
+                      border-radius: 8px;
+                      padding: 15px;
+                      margin-bottom: 20px;
+                      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                      display: flex;
+                      flex-wrap: wrap;
+                      gap: 10px;
+                      align-items: center;
+                    }
+                    .config-form input {
+                      flex: 1;
+                      min-width: 200px;
+                      padding: 8px;
+                      border: 1px solid #ddd;
+                      border-radius: 4px;
+                    }
+                    .config-form button {
+                      padding: 8px 16px;
+                      background-color: #4CAF50;
+                      color: white;
+                      border: none;
+                      border-radius: 4px;
+                      cursor: pointer;
+                    }
+                    .config-form button:hover {
+                      background-color: #45a049;
+                    }
+                  </style>
+                </head>
+                <body>
+                  <div class="container">
+                    <div class="header">
+                      <h1>Real-time Object Detection</h1>
+                      <p>Using AWS Rekognition and Kinesis Video Streams</p>
+                    </div>
+                    
+                    <div class="config-form">
+                      <input type="text" id="hlsPlaybackUrl" placeholder="Enter KVS HLS Playback URL" />
+                      <input type="text" id="websocketUrl" placeholder="Enter WebSocket API URL" value="${websocketEndpoint}" />
+                      <button type="button" id="startButton">Start</button>
+                    </div>
+                    
+                    <div class="status" id="connectionStatus">Not connected</div>
+                    
+                    <div class="video-container">
+                      <video id="videoElement" autoplay controls muted></video>
+                      <canvas id="overlayCanvas" class="canvas-overlay"></canvas>
+                    </div>
+                    
+                    <div class="detection-list">
+                      <h2>Detected Objects</h2>
+                      <div id="detectionsList"></div>
+                    </div>
+                  </div>
+
+                  <script>
+                    // DOM elements
+                    const videoElement = document.getElementById('videoElement');
+                    const overlayCanvas = document.getElementById('overlayCanvas');
+                    const ctx = overlayCanvas.getContext('2d');
+                    const connectionStatus = document.getElementById('connectionStatus');
+                    const detectionsList = document.getElementById('detectionsList');
+                    const hlsPlaybackUrlInput = document.getElementById('hlsPlaybackUrl');
+                    const websocketUrlInput = document.getElementById('websocketUrl');
+                    const startButton = document.getElementById('startButton');
+                    
+                    // Configuration
+                    let hlsPlaybackUrl = '';
+                    let websocketUrl = '${websocketEndpoint}';
+                    
+                    // WebSocket and player instances
+                    let socket = null;
+                    let hls = null;
+                    
+                    // Current detections
+                    let currentDetections = [];
+                    
+                    // Initialize the application
+                    function init() {
+                      // Try to load config from localStorage
+                      try {
+                        const savedConfig = localStorage.getItem('objDetectionConfig');
+                        if (savedConfig) {
+                          const config = JSON.parse(savedConfig);
+                          hlsPlaybackUrlInput.value = config.hlsPlaybackUrl || '';
+                        }
+                      } catch (err) {
+                        console.error('Error loading saved config:', err);
+                      }
+                      
+                      // Add event listener for start button
+                      startButton.addEventListener('click', startApplication);
+                      
+                      // Initialize canvas size
+                      resizeCanvas();
+                      window.addEventListener('resize', resizeCanvas);
+                    }
+                    
+                    // Start the application with provided config
+                    function startApplication() {
+                      // Get config values
+                      hlsPlaybackUrl = hlsPlaybackUrlInput.value.trim();
+                      websocketUrl = websocketUrlInput.value.trim();
+                      
+                      if (!hlsPlaybackUrl || !websocketUrl) {
+                        alert('Please enter both HLS Playback URL and WebSocket API URL');
+                        return;
+                      }
+                      
+                      // Save config for next time
+                      try {
+                        localStorage.setItem('objDetectionConfig', JSON.stringify({
+                          hlsPlaybackUrl,
+                          websocketUrl
+                        }));
+                      } catch (err) {
+                        console.error('Error saving config:', err);
+                      }
+                      
+                      // Initialize video and WebSocket
+                      initVideo();
+                      connectWebSocket();
+                      
+                      // Disable inputs after starting
+                      hlsPlaybackUrlInput.disabled = true;
+                      websocketUrlInput.disabled = true;
+                      startButton.disabled = true;
+                    }
+                    
+                    // Initialize video playback
+                    function initVideo() {
+                      // Stop any existing player
+                      if (hls) {
+                        hls.destroy();
+                        hls = null;
+                      }
+                      
+                      connectionStatus.textContent = 'Connecting to video stream...';
+                      connectionStatus.style.backgroundColor = '#fff3cd';
+                      connectionStatus.style.color = '#856404';
+                      
+                      if (Hls.isSupported()) {
+                        hls = new Hls({
+                          debug: false,
+                          // Low latency mode
+                          enableWorker: true,
+                          lowLatencyMode: true,
+                          backBufferLength: 30
+                        });
+                        
+                        hls.loadSource(hlsPlaybackUrl);
+                        hls.attachMedia(videoElement);
+                        
+                        hls.on(Hls.Events.MANIFEST_PARSED, function() {
+                          videoElement.play()
+                            .then(() => {
+                              connectionStatus.textContent = 'Video stream connected';
+                              connectionStatus.style.backgroundColor = '#d4edda';
+                              connectionStatus.style.color = '#155724';
+                            })
+                            .catch(err => {
+                              console.error('Error playing video:', err);
+                              connectionStatus.textContent = 'Error playing video: ' + err.message;
+                              connectionStatus.style.backgroundColor = '#f8d7da';
+                              connectionStatus.style.color = '#721c24';
+                            });
+                        });
+                        
+                        hls.on(Hls.Events.ERROR, function(event, data) {
+                          if (data.fatal) {
+                            console.error('HLS fatal error:', data);
+                            connectionStatus.textContent = 'Video stream error: ' + data.type;
+                            connectionStatus.style.backgroundColor = '#f8d7da';
+                            connectionStatus.style.color = '#721c24';
+                            
+                            switch (data.type) {
+                              case Hls.ErrorTypes.NETWORK_ERROR:
+                                // Try to recover network error
+                                hls.startLoad();
+                                break;
+                              case Hls.ErrorTypes.MEDIA_ERROR:
+                                // Try to recover media error
+                                hls.recoverMediaError();
+                                break;
+                              default:
+                                // Cannot recover
+                                hls.destroy();
+                                break;
+                            }
+                          }
+                        });
+                      } else if (videoElement.canPlayType('application/vnd.apple.mpegurl')) {
+                        // Native HLS support
+                        videoElement.src = hlsPlaybackUrl;
+                        videoElement.addEventListener('loadedmetadata', function() {
+                          videoElement.play();
+                          connectionStatus.textContent = 'Video stream connected (native HLS)';
+                          connectionStatus.style.backgroundColor = '#d4edda';
+                          connectionStatus.style.color = '#155724';
+                        });
+                        
+                        videoElement.addEventListener('error', function(e) {
+                          console.error('Video error:', videoElement.error);
+                          connectionStatus.textContent = 'Video stream error';
+                          connectionStatus.style.backgroundColor = '#f8d7da';
+                          connectionStatus.style.color = '#721c24';
+                        });
+                      } else {
+                        connectionStatus.textContent = 'HLS is not supported in this browser';
+                        connectionStatus.style.backgroundColor = '#f8d7da';
+                        connectionStatus.style.color = '#721c24';
+                      }
+                    }
+                    
+                    // Connect to WebSocket API
+                    function connectWebSocket() {
+                      // Close existing connection
+                      if (socket) {
+                        socket.close();
+                        socket = null;
+                      }
+                      
+                      // Update status
+                      connectionStatus.textContent = 'Connecting to detection service...';
+                      connectionStatus.style.backgroundColor = '#fff3cd';
+                      connectionStatus.style.color = '#856404';
+                      
+                      // Create new connection
+                      socket = new WebSocket(websocketUrl);
+                      
+                      socket.onopen = function() {
+                        connectionStatus.textContent = 'Connected to detection service';
+                        connectionStatus.style.backgroundColor = '#d4edda';
+                        connectionStatus.style.color = '#155724';
+                      };
+                      
+                      socket.onmessage = function(event) {
+                        try {
+                          const data = JSON.parse(event.data);
+                          
+                          if (data.type === 'detection' && data.data && data.data.length > 0) {
+                            // Update detections
+                            currentDetections = data.data[0].detectedObjects || [];
+                            
+                            // Update UI
+                            updateDetectionList();
+                            drawBoundingBoxes();
+                          }
+                        } catch (e) {
+                          console.error('Error parsing WebSocket message:', e);
+                        }
+                      };
+                      
+                      socket.onclose = function() {
+                        connectionStatus.textContent = 'Disconnected from detection service - Reconnecting...';
+                        connectionStatus.style.backgroundColor = '#f8d7da';
+                        connectionStatus.style.color = '#721c24';
+                        
+                        // Reconnect after 2 seconds
+                        setTimeout(connectWebSocket, 2000);
+                      };
+                      
+                      socket.onerror = function(error) {
+                        console.error('WebSocket error:', error);
+                        connectionStatus.textContent = 'WebSocket error - Check console for details';
+                        connectionStatus.style.backgroundColor = '#f8d7da';
+                        connectionStatus.style.color = '#721c24';
+                      };
+                    }
+                    
+                    // Draw bounding boxes on canvas
+                    function drawBoundingBoxes() {
+                      // Clear canvas
+                      ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+                      
+                      if (!currentDetections.length) return;
+                      
+                      const videoWidth = videoElement.clientWidth;
+                      const videoHeight = videoElement.clientHeight;
+                      
+                      currentDetections.forEach(obj => {
+                        const { boundingBox, name, confidence } = obj;
+                        
+                        // Calculate pixel values from normalized bounding box
+                        const x = boundingBox.Left * videoWidth;
+                        const y = boundingBox.Top * videoHeight;
+                        const width = boundingBox.Width * videoWidth;
+                        const height = boundingBox.Height * videoHeight;
+                        
+                        // Draw rectangle
+                        ctx.strokeStyle = '#00FF00';
+                        ctx.lineWidth = 3;
+                        ctx.strokeRect(x, y, width, height);
+                        
+                        // Draw label background
+                        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                        ctx.fillRect(x, y - 25, 150, 25);
+                        
+                        // Draw label text
+                        ctx.fillStyle = '#FFFFFF';
+                        ctx.font = '16px Arial';
+                        ctx.fillText(\`\${name} (\${confidence.toFixed(1)}%)\`, x + 5, y - 7);
+                      });
+                    }
+                    
+                    // Update the detection list in the DOM
+                    function updateDetectionList() {
+                      detectionsList.innerHTML = '';
+                      
+                      if (!currentDetections.length) {
+                        detectionsList.innerHTML = '<p>No objects detected</p>';
+                        return;
+                      }
+                      
+                      currentDetections.forEach(obj => {
+                        const detectionItem = document.createElement('div');
+                        detectionItem.className = 'detection-item';
+                        detectionItem.innerHTML = \`
+                          <span>\${obj.name}</span>
+                          <span class="confidence">\${obj.confidence.toFixed(1)}%</span>
+                        \`;
+                        detectionsList.appendChild(detectionItem);
+                      });
+                    }
+                    
+                    // Resize canvas function
+                    function resizeCanvas() {
+                      overlayCanvas.width = videoElement.clientWidth;
+                      overlayCanvas.height = videoElement.clientHeight;
+                      // Redraw bounding boxes if we have detections
+                      if (currentDetections.length > 0) {
+                        drawBoundingBoxes();
+                      }
+                    }
+                    
+                    // Load HLS.js library
+                    function loadScript() {
+                      const script = document.createElement('script');
+                      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.4.0/hls.min.js';
+                      script.onload = function() {
+                        // Initialize app once HLS.js is loaded
+                        init();
+                      };
+                      document.head.appendChild(script);
+                    }
+                    
+                    // Start the application
+                    loadScript();
+                  </script>
+                </body>
+                </html>`;
+                
+                const errorContent = `<!DOCTYPE html>
+                <html>
+                <head>
+                  <meta http-equiv="refresh" content="0;url=/index.html">
+                </head>
+                <body>
+                  Redirecting...
+                </body>
+                </html>`;
+                
+                // Upload HTML files to S3
+                await s3.putObject({
+                  Bucket: bucketName,
+                  Key: 'index.html',
+                  Body: htmlContent,
+                  ContentType: 'text/html'
+                }).promise();
+                
+                await s3.putObject({
+                  Bucket: bucketName,
+                  Key: 'error.html',
+                  Body: errorContent,
+                  ContentType: 'text/html'
+                }).promise();
+                
+                console.log('Successfully deployed frontend files to S3');
+                await response.send(event, context, response.SUCCESS, {}, event.LogicalResourceId);
+              } else if (event.RequestType === 'Delete') {
+                // No need to delete files as bucket will be deleted by CloudFormation
+                await response.send(event, context, response.SUCCESS, {}, event.LogicalResourceId);
+              }
+            } catch (err) {
+              console.error('Error:', err);
+              await response.send(event, context, response.FAILED, { Error: err.message });
+            }
+          };
+
+  S3Deployment:
+    Type: Custom::S3Deployment
+    DependsOn:
+      - WebAppBucket
+      - WebAppBucketPolicy
+    Properties:
+      ServiceToken: !GetAtt S3DeploymentFunction.Arn
+      BucketName: !Ref WebAppBucket
+      WebSocketEndpoint: !Ref WebSocketEndpoint
+
+Outputs:
+  CloudFrontURL:
+    Description: URL for the CloudFront distribution
+    Value: !Sub "https://${CloudFrontDistribution.DomainName}"
+    Export:
+      Name: !Sub "${StackName}-CloudFrontURL"
+      
+  S3BucketName:
+    Description: S3 Bucket for uploading application files
+    Value: !Ref WebAppBucket
+    Export:
+      Name: !Sub "${StackName}-S3BucketName"

@@ -1,0 +1,208 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Rekognition Real-time Object Detection Demo - Integration Stack'
+
+Parameters:
+  StackName:
+    Type: String
+    Description: Name of the parent stack
+    
+  VideoStreamArn:
+    Type: String
+    Description: ARN of the Kinesis Video Stream
+    
+  RekognitionRoleArn:
+    Type: String
+    Description: ARN of the IAM role for Rekognition
+    
+  KinesisDataStreamArn:
+    Type: String
+    Description: ARN of the Kinesis Data Stream for detection results
+    
+  ProcessResultsFunctionArn:
+    Type: String
+    Description: ARN of the Lambda function that processes detection results
+    
+  WebSocketEndpoint:
+    Type: String
+    Description: Endpoint URL for the WebSocket API
+
+Resources:
+  # Custom Resource Lambda for creating and starting Rekognition Stream Processor
+  RekognitionProcessorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: !GetAtt RekognitionProcessorRole.Arn
+      Runtime: nodejs18.x
+      Timeout: 300
+      MemorySize: 128
+      Code:
+        ZipFile: |
+          const AWS = require('aws-sdk');
+          const rekognition = new AWS.Rekognition();
+          const lambda = new AWS.Lambda();
+          const response = require('cfn-response');
+          
+          exports.handler = async (event, context) => {
+            try {
+              console.log('Event:', JSON.stringify(event, null, 2));
+              
+              // Get parameters from the event
+              const kvsArn = event.ResourceProperties.KvsArn;
+              const kdsArn = event.ResourceProperties.KdsArn;
+              const roleArn = event.ResourceProperties.RoleArn;
+              const processorName = event.ResourceProperties.ProcessorName;
+              const lambdaFunctionArn = event.ResourceProperties.LambdaFunctionArn;
+              const websocketEndpoint = event.ResourceProperties.WebSocketEndpoint;
+              
+              if (event.RequestType === 'Create' || event.RequestType === 'Update') {
+                // 1. Update Lambda environment variables
+                console.log('Updating Lambda environment variables...');
+                try {
+                  // Get current function configuration
+                  const lambdaName = lambdaFunctionArn.split(':').pop();
+                  const getFunctionResult = await lambda.getFunction({
+                    FunctionName: lambdaName
+                  }).promise();
+                  
+                  const currentEnv = getFunctionResult.Configuration.Environment || { Variables: {} };
+                  const updatedEnv = {
+                    Variables: {
+                      ...currentEnv.Variables,
+                      WEBSOCKET_API_ENDPOINT: websocketEndpoint.replace('wss://', '').split('/')[0]
+                    }
+                  };
+                  
+                  // Update function configuration
+                  await lambda.updateFunctionConfiguration({
+                    FunctionName: lambdaName,
+                    Environment: updatedEnv
+                  }).promise();
+                  
+                  console.log('Lambda environment variables updated successfully');
+                } catch (err) {
+                  console.error('Error updating Lambda environment variables:', err);
+                  throw err;
+                }
+                
+                // 2. Check if processor already exists
+                try {
+                  await rekognition.describeStreamProcessor({ Name: processorName }).promise();
+                  console.log(`Stream processor ${processorName} already exists.`);
+                  
+                  // Delete existing processor
+                  await rekognition.deleteStreamProcessor({ Name: processorName }).promise();
+                  console.log(`Deleted existing stream processor ${processorName}.`);
+                } catch (err) {
+                  if (err.code !== 'ResourceNotFoundException') {
+                    throw err;
+                  }
+                }
+                
+                // 3. Create stream processor
+                const createParams = {
+                  Name: processorName,
+                  Input: {
+                    KinesisVideoStream: {
+                      Arn: kvsArn
+                    }
+                  },
+                  Output: {
+                    KinesisDataStream: {
+                      Arn: kdsArn
+                    }
+                  },
+                  RoleArn: roleArn,
+                  Settings: {
+                    ConnectedHome: {
+                      MinConfidence: 60,
+                      Labels: ["PERSON", "PET", "PACKAGE", "DOOR", "VEHICLE", "FURNITURE", "FACE"]
+                    }
+                  }
+                };
+                
+                console.log('Creating stream processor with params:', JSON.stringify(createParams, null, 2));
+                const createResult = await rekognition.createStreamProcessor(createParams).promise();
+                console.log('Create stream processor result:', createResult);
+                
+                // 4. Start stream processor
+                const startResult = await rekognition.startStreamProcessor({ Name: processorName }).promise();
+                console.log('Start stream processor result:', startResult);
+                
+                await response.send(event, context, response.SUCCESS, { ProcessorName: processorName }, processorName);
+              } else if (event.RequestType === 'Delete') {
+                // Stop and delete stream processor if it exists
+                try {
+                  await rekognition.stopStreamProcessor({ Name: processorName }).promise();
+                  console.log(`Stopped stream processor ${processorName}.`);
+                  
+                  await rekognition.deleteStreamProcessor({ Name: processorName }).promise();
+                  console.log(`Deleted stream processor ${processorName}.`);
+                } catch (err) {
+                  if (err.code !== 'ResourceNotFoundException') {
+                    console.warn(`Error deleting processor: ${err.message}`);
+                  }
+                }
+                
+                await response.send(event, context, response.SUCCESS, {}, processorName);
+              }
+            } catch (err) {
+              console.error('Error:', err);
+              await response.send(event, context, response.FAILED, { Error: err.message });
+            }
+          };
+
+  # IAM Role for Custom Resource Lambda
+  RekognitionProcessorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: RekognitionAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - rekognition:CreateStreamProcessor
+                  - rekognition:DeleteStreamProcessor
+                  - rekognition:DescribeStreamProcessor
+                  - rekognition:StartStreamProcessor
+                  - rekognition:StopStreamProcessor
+                Resource: "*"
+        - PolicyName: LambdaAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:GetFunction
+                  - lambda:UpdateFunctionConfiguration
+                Resource: !Ref ProcessResultsFunctionArn
+
+  # Rekognition Stream Processor
+  RekognitionProcessor:
+    Type: Custom::RekognitionProcessor
+    Properties:
+      ServiceToken: !GetAtt RekognitionProcessorFunction.Arn
+      ProcessorName: !Sub "${StackName}-processor"
+      KvsArn: !Ref VideoStreamArn
+      KdsArn: !Ref KinesisDataStreamArn
+      RoleArn: !Ref RekognitionRoleArn
+      LambdaFunctionArn: !Ref ProcessResultsFunctionArn
+      WebSocketEndpoint: !Ref WebSocketEndpoint
+
+Outputs:
+  StreamProcessorName:
+    Description: Name of the Rekognition Stream Processor
+    Value: !Sub "${StackName}-processor"
+    Export:
+      Name: !Sub "${StackName}-StreamProcessorName"

@@ -1,0 +1,235 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Rekognition Real-time Object Detection Demo - Backend Stack'
+
+Parameters:
+  StackName:
+    Type: String
+    Description: Name of the parent stack
+    
+  VideoStreamArn:
+    Type: String
+    Description: ARN of the Kinesis Video Stream
+
+Resources:
+  # Kinesis Data Stream for detection results
+  DetectionResultsStream:
+    Type: AWS::Kinesis::Stream
+    Properties:
+      Name: !Sub "${StackName}-detection-results"
+      ShardCount: 1
+      RetentionPeriodHours: 24
+
+  # DynamoDB Tables
+  ConnectionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${StackName}-connections"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: connectionId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: connectionId
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  DetectionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${StackName}-detections"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: frameId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: frameId
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  # Lambda Functions
+  ProcessResultsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${StackName}-process-results"
+      Runtime: nodejs18.x
+      Handler: index.handler
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          DETECTIONS_TABLE: !Ref DetectionsTable
+          CONNECTIONS_TABLE: !Ref ConnectionsTable
+          # Will be updated by the Integration Stack
+          WEBSOCKET_API_ENDPOINT: "placeholder"
+      Role: !GetAtt ProcessResultsRole.Arn
+      Code:
+        ZipFile: |
+          const AWS = require('aws-sdk');
+          const dynamoDB = new AWS.DynamoDB.DocumentClient();
+          const apiGatewayManagementApi = new AWS.ApiGatewayManagementApi({
+            endpoint: process.env.WEBSOCKET_API_ENDPOINT
+          });
+
+          exports.handler = async (event) => {
+            try {
+              // Process records from Kinesis Data Stream
+              const detectionResults = [];
+              
+              for (const record of event.Records) {
+                // Decode and parse the data from Kinesis
+                const payload = Buffer.from(record.kinesis.data, 'base64').toString('utf-8');
+                const detectionData = JSON.parse(payload);
+                
+                // Extract timestamp and frame ID
+                const timestamp = record.kinesis.approximateArrivalTimestamp;
+                const frameId = detectionData.InputInformation?.KinesisVideo?.FragmentNumber || Date.now().toString();
+                
+                // Process detected objects
+                const detectedObjects = detectionData.ConnectedHomeLabels
+                  ? detectionData.ConnectedHomeLabels
+                      .filter(label => label.Confidence >= 80) // Filter by confidence threshold
+                      .map(label => ({
+                        name: label.Name,
+                        confidence: label.Confidence,
+                        boundingBox: label.BoundingBox
+                      }))
+                  : [];
+                
+                if (detectedObjects.length > 0) {
+                  // Store detection in DynamoDB if needed
+                  await dynamoDB.put({
+                    TableName: process.env.DETECTIONS_TABLE,
+                    Item: {
+                      frameId,
+                      timestamp,
+                      detectedObjects
+                    }
+                  }).promise();
+                  
+                  // Prepare result for sending to WebSocket clients
+                  detectionResults.push({
+                    frameId,
+                    timestamp,
+                    detectedObjects
+                  });
+                }
+              }
+              
+              if (detectionResults.length > 0) {
+                // Get all connected WebSocket clients
+                const connectionData = await dynamoDB.scan({
+                  TableName: process.env.CONNECTIONS_TABLE
+                }).promise();
+                
+                // Send the detection results to each connected client
+                const sendPromises = connectionData.Items.map(async ({ connectionId }) => {
+                  try {
+                    await apiGatewayManagementApi.postToConnection({
+                      ConnectionId: connectionId,
+                      Data: JSON.stringify({
+                        type: 'detection',
+                        data: detectionResults
+                      })
+                    }).promise();
+                  } catch (e) {
+                    if (e.statusCode === 410) {
+                      // Remove stale connections
+                      await dynamoDB.delete({
+                        TableName: process.env.CONNECTIONS_TABLE,
+                        Key: { connectionId }
+                      }).promise();
+                    } else {
+                      throw e;
+                    }
+                  }
+                });
+                
+                await Promise.all(sendPromises);
+              }
+              
+              return { statusCode: 200, body: 'Success' };
+            } catch (error) {
+              console.error('Error processing detection results:', error);
+              return { statusCode: 500, body: error.message };
+            }
+          };
+
+  # IAM Roles for Lambda
+  ProcessResultsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Scan
+                Resource: 
+                  - !GetAtt ConnectionsTable.Arn
+                  - !GetAtt DetectionsTable.Arn
+        - PolicyName: WebSocketAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: execute-api:ManageConnections
+                Resource: "*" # Will be restricted by the Integration Stack
+        - PolicyName: KinesisAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kinesis:GetRecords
+                  - kinesis:GetShardIterator
+                  - kinesis:DescribeStream
+                  - kinesis:ListShards
+                Resource: !GetAtt DetectionResultsStream.Arn
+
+Outputs:
+  ConnectionsTableName:
+    Description: Name of the WebSocket connections table
+    Value: !Ref ConnectionsTable
+    Export:
+      Name: !Sub "${StackName}-ConnectionsTableName"
+      
+  DetectionsTableName:
+    Description: Name of the object detections table
+    Value: !Ref DetectionsTable
+    Export:
+      Name: !Sub "${StackName}-DetectionsTableName"
+      
+  KinesisDataStreamArn:
+    Description: ARN of the Kinesis Data Stream for detection results
+    Value: !GetAtt DetectionResultsStream.Arn
+    Export:
+      Name: !Sub "${StackName}-KinesisDataStreamArn"
+      
+  ProcessResultsFunctionArn:
+    Description: ARN of the Lambda function that processes detection results
+    Value: !GetAtt ProcessResultsFunction.Arn
+    Export:
+      Name: !Sub "${StackName}-ProcessResultsFunctionArn"
+      
+  ProcessResultsFunctionName:
+    Description: Name of the Lambda function that processes detection results
+    Value: !Ref ProcessResultsFunction
+    Export:
+      Name: !Sub "${StackName}-ProcessResultsFunctionName"

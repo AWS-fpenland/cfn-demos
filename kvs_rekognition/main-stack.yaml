@@ -1,0 +1,99 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Rekognition Real-time Object Detection Demo - Main Stack'
+
+Parameters:
+  S3BucketForTemplates:
+    Type: String
+    Description: S3 bucket where nested stack templates are stored
+    
+  S3KeyPrefix:
+    Type: String
+    Description: S3 key prefix for nested stack templates
+    Default: nested-stacks/
+
+Resources:
+  # Video Processing Resources
+  VideoProcessingStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://${S3BucketForTemplates}.s3.amazonaws.com/${S3KeyPrefix}video-processing.yaml
+      TimeoutInMinutes: 30
+      Parameters:
+        StackName: !Ref AWS::StackName
+
+  # Backend Processing Resources
+  BackendStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://${S3BucketForTemplates}.s3.amazonaws.com/${S3KeyPrefix}backend.yaml
+      TimeoutInMinutes: 30
+      Parameters:
+        StackName: !Ref AWS::StackName
+        VideoStreamArn: !GetAtt VideoProcessingStack.Outputs.VideoStreamArn
+
+  # WebSocket API Resources
+  WebSocketStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: BackendStack
+    Properties:
+      TemplateURL: !Sub https://${S3BucketForTemplates}.s3.amazonaws.com/${S3KeyPrefix}websocket.yaml
+      TimeoutInMinutes: 30
+      Parameters:
+        StackName: !Ref AWS::StackName
+        ConnectionsTableName: !GetAtt BackendStack.Outputs.ConnectionsTableName
+
+  # Frontend Resources
+  FrontendStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: 
+      - WebSocketStack
+      - VideoProcessingStack
+    Properties:
+      TemplateURL: !Sub https://${S3BucketForTemplates}.s3.amazonaws.com/${S3KeyPrefix}frontend.yaml
+      TimeoutInMinutes: 30
+      Parameters:
+        StackName: !Ref AWS::StackName
+        WebSocketEndpoint: !GetAtt WebSocketStack.Outputs.WebSocketApiEndpoint
+
+  # Integration Resources - connects everything together
+  IntegrationStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - VideoProcessingStack
+      - BackendStack
+      - WebSocketStack
+    Properties:
+      TemplateURL: !Sub https://${S3BucketForTemplates}.s3.amazonaws.com/${S3KeyPrefix}integration.yaml
+      TimeoutInMinutes: 30
+      Parameters:
+        StackName: !Ref AWS::StackName
+        VideoStreamArn: !GetAtt VideoProcessingStack.Outputs.VideoStreamArn
+        RekognitionRoleArn: !GetAtt VideoProcessingStack.Outputs.RekognitionRoleArn
+        KinesisDataStreamArn: !GetAtt BackendStack.Outputs.KinesisDataStreamArn
+        ProcessResultsFunctionArn: !GetAtt BackendStack.Outputs.ProcessResultsFunctionArn
+        WebSocketEndpoint: !GetAtt WebSocketStack.Outputs.WebSocketApiEndpoint
+
+Outputs:
+  VideoStreamName:
+    Description: Name of the Kinesis Video Stream
+    Value: !GetAtt VideoProcessingStack.Outputs.VideoStreamName
+
+  VideoStreamArn:
+    Description: ARN of the Kinesis Video Stream
+    Value: !GetAtt VideoProcessingStack.Outputs.VideoStreamArn
+
+  WebSocketApiEndpoint:
+    Description: WebSocket API Endpoint
+    Value: !GetAtt WebSocketStack.Outputs.WebSocketApiEndpoint
+
+  CloudFrontURL:
+    Description: URL for the CloudFront distribution
+    Value: !GetAtt FrontendStack.Outputs.CloudFrontURL
+  
+  S3BucketName:
+    Description: S3 Bucket for uploading application files
+    Value: !GetAtt FrontendStack.Outputs.S3BucketName
+    
+  HLSInstructions:
+    Description: How to get the HLS Streaming URL
+    Value: !Sub "Run: aws kinesisvideo get-hls-streaming-session-url --stream-name ${VideoProcessingStack.Outputs.VideoStreamName} --playback-mode LIVE --expires 43200 --query 'HLSStreamingSessionURL' --output text"
