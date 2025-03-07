@@ -40,6 +40,17 @@ aws s3 cp frontend.yaml s3://my-cloudformation-templates/nested-stacks/
 aws s3 cp integration.yaml s3://my-cloudformation-templates/nested-stacks/
 ```
 
+## Step 3.5: Verify Node.js Runtime in Templates
+
+Before deploying, ensure all Lambda functions in your templates are using Node.js 14.x runtime:
+
+```bash
+# Check each template for nodejs14.x
+grep -n "Runtime: nodejs" *.yaml
+```
+
+All Lambda functions should be using `Runtime: nodejs14.x` to ensure compatibility with the AWS SDK v2 that's used in the Lambda functions.
+
 ## Step 4: Deploy the Main Stack
 
 Deploy the main stack which will orchestrate all the nested stacks:
@@ -49,8 +60,8 @@ aws cloudformation create-stack \
   --stack-name rekognition-demo \
   --template-body file://main-stack.yaml \
   --parameters \
-    ParameterKey=S3BucketForTemplates,ParameterValue=fp-cfn-demos \
-    ParameterKey=S3KeyPrefix,ParameterValue=kvs_rekognition/ \
+    ParameterKey=S3BucketForTemplates,ParameterValue=my-cloudformation-templates \
+    ParameterKey=S3KeyPrefix,ParameterValue=nested-stacks/ \
   --capabilities CAPABILITY_NAMED_IAM \
   --region us-east-1
 ```
